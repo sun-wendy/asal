@@ -32,6 +32,7 @@ group.add_argument("--time_sampling", type=int, default=32, help="number of fram
 group = parser.add_argument_group("optimization")
 group.add_argument("--sigma", type=float, default=0.1, help="mutation rate")
 group.add_argument("--total_iters", type=int, default=10000, help="total number of iterations (I)")
+group.add_argument("--pop_size", type=int, default=16, help="number of new solutions each iteration")
 group.add_argument("--bs", type=int, default=1, help="number of init states to average over")
 group.add_argument("--n_iters", type=int, default=None, help="alias for total_iters")
 
@@ -59,13 +60,11 @@ class MapElites:
     def __init__(self, n_prompts, solution_dim):
         self.n_prompts = n_prompts
         self.solution_dim = solution_dim
-        # Store best performance so far per niche
         self.p_best = jnp.full((n_prompts,), -jnp.inf)
-        # Store best solution so far per niche
         self.x_best = jnp.zeros((n_prompts, solution_dim))
 
     def random_solution(self, rng):
-        """Generate random solution."""
+        """Generate a random solution."""
         return normal(rng, (self.solution_dim,))
 
     def random_selection(self, rng):
@@ -87,7 +86,7 @@ class MapElites:
 
 @jax.jit
 def random_variation(rng, x, sigma):
-    """Create randomly modified copy of x via mutation (jitted)."""
+    """Create randomly modified copy of x."""
     return x + normal(rng, x.shape) * sigma
 
 
@@ -136,51 +135,59 @@ def main(args):
 
     for iter_i in pbar:
         rng, step_rng = split(rng)
-        
-        # Generate a solution (init or variation)
+
+        # Produce a batch of new solutions of size pop_size
         if iter_i < args.init_iters:
-            rng, _rng = split(step_rng)
-            x_prime = map_elites.random_solution(_rng)
+            # Initialization phase: just sample random solutions
+            def sample_new(_):
+                return map_elites.random_solution(_)
         else:
-            rng, _rng1, _rng2 = split(step_rng, 3)
-            x = map_elites.random_selection(_rng1)
-            x_prime = random_variation(_rng2, x, args.sigma)
-        
-        # Evaluate x_prime on ALL prompts
+            # Variation phase: each new solution is a mutated occupant
+            def sample_new(_):
+                parent = map_elites.random_selection(_)
+                rng2, _ = split(_, 2)
+                return random_variation(rng2, parent, args.sigma)
+
+        rng, rng_pop = split(rng)
+        rng_batch = jax.random.split(rng_pop, args.pop_size)
+        pop_solutions = jax.vmap(sample_new)(rng_batch)  # shape: [pop_size, solution_dim]
+
+        # Evaluate the entire batch on all prompts
         rng, eval_rng = split(rng)
-        # shape: (n_prompts,)
-        p_all = jax.vmap(lambda idx: performance(eval_rng, x_prime, idx))(jnp.arange(n_prompts))
 
-        # Update those niches where x_prime is better
-        better_mask = p_all > map_elites.p_best  # shape: [n_prompts]
-        # shape: [n_prompts]
-        map_elites.p_best = jnp.where(better_mask, p_all, map_elites.p_best)
-        # shape: [n_prompts, solution_dim]
-        map_elites.x_best = jnp.where(better_mask[:, None], x_prime[None, :], map_elites.x_best)
+        # vmap over population dim, and inside that, vmap over n_prompts:
+        def eval_one_candidate(x_candidate):
+            return jax.vmap(lambda idx: performance(eval_rng, x_candidate, idx))(
+                jnp.arange(n_prompts)
+            )
 
-        # Bookkeeping
+        p_all = jax.vmap(eval_one_candidate)(pop_solutions)  # [pop_size, n_prompts]
+
+        # Find the best solution for each prompt
+        best_idx_for_prompt = jnp.argmax(p_all, axis=0)  # [n_prompts], each is an integer in [0, pop_size)
+        best_val_for_prompt = jnp.max(p_all, axis=0)  # [n_prompts]
+        # Gather the solutions that produce these best values
+        occupant_new = pop_solutions[best_idx_for_prompt, :]  # [n_prompts, solution_dim]
+        # Check which prompts get improved
+        better_mask = best_val_for_prompt > map_elites.p_best
+        # Update p_best & x_best
+        map_elites.p_best = jnp.where(better_mask, best_val_for_prompt, map_elites.p_best)
+        map_elites.x_best = jnp.where(better_mask[:, None], occupant_new, map_elites.x_best)
+
+        # Log data
         di = {
-            # p_best is shape [n_prompts], let's store it as an array for logging
             'best_fitness': map_elites.p_best,
             'total_solutions': jnp.sum(map_elites.p_best > -jnp.inf)
         }
         data.append(di)
-
-        # TQDM display
         pbar.set_postfix(avg_best_fitness=float(di['best_fitness'].mean()))
-        
+
         # Save data periodically
         if (args.save_dir is not None 
             and (iter_i % (args.total_iters // 10) == 0 or iter_i == args.total_iters - 1)):
-            # Convert all data so far into numpy arrays
             data_save = jax.tree_map(lambda *x: np.array(jnp.stack(x, axis=0)), *data)
             util.save_pkl(args.save_dir, "data", data_save)
-            
-            # Save best solutions (x_best) and performance (p_best)
-            best = (
-                np.array(map_elites.x_best),  # shape [n_prompts, solution_dim]
-                np.array(map_elites.p_best)   # shape [n_prompts]
-            )
+            best = (np.array(map_elites.x_best), np.array(map_elites.p_best))
             util.save_pkl(args.save_dir, "best", best)
 
     return map_elites.x_best, map_elites.p_best
