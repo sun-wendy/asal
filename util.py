@@ -30,3 +30,8 @@ def load_pkl(load_dir, name):
     else:
         return None
 
+
+def read_prompt_file(prompt_file):
+    with open(prompt_file, 'r') as f:
+        prompts = f.readlines()
+    return [prompt.strip() for prompt in prompts]

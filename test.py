@@ -203,23 +203,25 @@ rng = jax.random.PRNGKey(0)
 # 1. Plot Best Fitness vs Iteration, for each prompt
 best_fitness_array = data['best_fitness']  # shape: [Iters, N_Prompts]
 
-plt.figure(figsize=(20, 5))
-num_prompts = best_fitness_array.shape[1]
-for prompt_idx in range(num_prompts):
-    plt.plot(best_fitness_array[:, prompt_idx], label=f"Prompt {prompt_idx}")
+# plt.figure(figsize=(20, 5))
+# num_prompts = best_fitness_array.shape[1]
+# for prompt_idx in range(num_prompts):
+#     plt.plot(best_fitness_array[:, prompt_idx], label=f"Prompt {prompt_idx}")
 
-plt.xlabel("Iterations", fontsize=20)
-plt.ylabel("Fitness", fontsize=20)
-plt.title("MAP-Elites: Best Fitness per Prompt over Time", fontsize=25)
-plt.xticks(fontsize=15)
-plt.yticks(fontsize=15)
-plt.legend(fontsize=15)
-plt.tight_layout()
-plt.savefig(os.path.join(save_dir, "fitness.png"))
-plt.show()
+# plt.xlabel("Iterations", fontsize=20)
+# plt.ylabel("Fitness", fontsize=20)
+# plt.title("MAP-Elites: Best Fitness per Prompt over Time", fontsize=25)
+# plt.xticks(fontsize=15)
+# plt.yticks(fontsize=15)
+# plt.legend(fontsize=15)
+# plt.tight_layout()
+# plt.savefig(os.path.join(save_dir, "fitness.png"))
+# plt.show()
 
 # 2. For each prompt, visualize the best solution
-for prompt_idx, x_best in solutions.items():
+for prompt_idx in range(solutions.shape[0]):
+    x_best = solutions[prompt_idx]
+    p_best = performances[prompt_idx]
     # x_best is the flattened parameters for the best solution for this prompt
     rollout_data = rollout_fn(rng, x_best)
     rgb = rollout_data['rgb']  # shape: [T, H, W, 3], e.g. 8 frames
