@@ -5,6 +5,7 @@ from .boids import Boids
 from .lenia import Lenia
 from .plife import ParticleLife
 from .plife_plus import ParticleLifePlus
+from .plife_plus_opt import ParticleLifePlusOpt
 from .plenia import ParticleLenia
 from .dnca import DNCA
 from .nca import NCA
@@ -40,7 +41,9 @@ def create_substrate(substrate_name):
     elif substrate_name=='plife':
         substrate = ParticleLife(n_particles=5000, n_colors=6, search_space="beta+alpha", dt=2e-3, render_radius=1e-2)  
     elif substrate_name=='plife_plus':
-        substrate = ParticleLifePlus(n_particles=1000, dt=0.02, render_radius=0.04, sharpness=30., background_color='black')
+        substrate = ParticleLifePlus(n_particles=4000, dt=0.02, render_radius=0.04, sharpness=30., background_color='black')
+    elif substrate_name=='plife_plus_opt':
+        substrate = ParticleLifePlusOpt(n_particles=1000, dt=0.02, render_radius=0.04, sharpness=30., background_color='black')
     elif substrate_name=='plenia':
         substrate = ParticleLenia(n_particles=200, dt=0.1)
     elif substrate_name=='dnca':
