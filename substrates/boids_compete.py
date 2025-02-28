@@ -12,7 +12,9 @@ from functools import partial
 import flax.linen as nn
 from einops import rearrange, reduce, repeat
 
-from . import FlattenSimulationParameters
+import evosax
+
+# from . import FlattenSimulationParameters
 from .boids import Boids
 
 """
@@ -77,3 +79,25 @@ class BoidsCompeting():
         img = img.min(axis=0)
         return img
 
+
+class FlattenSimulationParameters():
+    def __init__(self, sim):
+        self.sim = sim
+        self.param_reshaper = evosax.ParameterReshaper(self.sim.default_params(jax.random.PRNGKey(0)))
+        self.n_params = self.param_reshaper.total_params
+
+    def default_params(self, rng):
+        params = self.sim.default_params(rng)
+        return self.param_reshaper.flatten_single(params)
+    
+    def init_state(self, rng, params):
+        params = self.param_reshaper.reshape_single(params)
+        return self.sim.init_state(rng, params)
+    
+    def step_state(self, rng, state, params):
+        params = self.param_reshaper.reshape_single(params)
+        return self.sim.step_state(rng, state, params)
+    
+    def render_state(self, state, params, img_size=None):
+        params = self.param_reshaper.reshape_single(params)
+        return self.sim.render_state(state, params, img_size)

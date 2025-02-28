@@ -9,6 +9,8 @@ from .plenia import ParticleLenia
 from .dnca import DNCA
 from .nca import NCA
 from .gol import GameOfLife
+from .boids_compete import BoidsCompeting
+from .gol_compete import GameOfLifeCompeting
 
 
 def create_substrate(substrate_name):
@@ -51,6 +53,12 @@ def create_substrate(substrate_name):
         substrate = NCA(grid_size=128, d_state=3, p_drop=0.5, dt=0.1)
     elif substrate_name=='gol':
         substrate = GameOfLife(grid_size=64)
+        rollout_steps = 1024
+    elif substrate_name=='boids_compete':
+        substrate = BoidsCompeting(n_boids=128, k_sims=8, space_size=3., init_dist='random', colors='bb3e03-0a9396-001219-e9d8a6-9b2226-94d2bd-ee9b00-ca6702-005f73-ae2012')
+        rollout_steps = 2048
+    elif substrate_name=='gol_compete':
+        substrate = GameOfLifeCompeting(k_sims=9, grid_size=64)
         rollout_steps = 1024
     else:
         raise ValueError(f"Unknown substrate name: {substrate_name}")

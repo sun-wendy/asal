@@ -11,16 +11,19 @@ from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
 from einop import einop
 
-from clip import CLIP
-from cppn import CPPN, FlattenCPPNParameters
+# from clip import CLIP
+import foundation_models
+# from cppn import CPPN, FlattenCPPNParameters
+import substrates
+from rollout import rollout_simulation
 import util
 
 parser = argparse.ArgumentParser()
 group = parser.add_argument_group("meta")
 group.add_argument("--seed", type=int, default=0, help="the random seed")
 
-group.add_argument("--noun_file", type=str, default=None, help="path of noun file")
-group.add_argument("--save_dir", type=str, default=None, help="path to save results to")
+group.add_argument("--noun_file", type=str, default="noun_list.txt", help="path of noun file")
+group.add_argument("--save_dir", type=str, default="data", help="path to save results to")
 group.add_argument("--prompt", type=str, default="an image of a {}", help="prompt for CLIP")
 # group.add_argument("--replace_only_one_niche", type=lambda x: x=='True', default=False, help="replace only the primary niche")
 
@@ -30,6 +33,10 @@ group.add_argument("--pop_size", type=int, default=None, help="")
 group.add_argument("--n_mutations", type=int, default=16, help="number of mutations to do")
 group.add_argument("--mutation", type=str, default="gaussian", help="type of mutation to do")
 group.add_argument("--sigma", type=float, default=0.5, help="mutation strength")
+
+group.add_argument("--substrate", type=str, default="lenia", help="substrate to use")
+group.add_argument("--foundation_model", type=str, default="clip", help="foundation model to use")
+group.add_argument("--n_steps", type=int, default=256, help="number of steps to run the simulation for")
 
 def parse_args(*args, **kwargs):
     args = parser.parse_args(*args, **kwargs)
@@ -48,20 +55,25 @@ def main(args):
     nouns = nouns[:args.pop_size]
     nouns = [args.prompt.format(noun) for noun in nouns]
 
-    clip = CLIP()
+    # clip = CLIP()
+    clip = foundation_models.create_foundation_model(args.foundation_model)
     z_txt = clip.embed_txt(nouns)
 
     # cppn = CPPN(n_layers=8, d_hidden=8, nonlin='tanh', hsv=True)
-    cppn = CPPN(n_layers=4, d_hidden=16, nonlin='tanh', hsv=True)
-    cppn = FlattenCPPNParameters(cppn)
+    # cppn = CPPN(n_layers=4, d_hidden=16, nonlin='tanh', hsv=True)
+    # cppn = FlattenCPPNParameters(cppn)
+    substrate = substrates.create_substrate(args.substrate)
+    substrate = substrates.FlattenSubstrateParameters(substrate)
+    rollout_fn = partial(rollout_simulation, s0=None, substrate=substrate, fm=clip, rollout_steps=args.n_steps, time_sampling='final', img_size=224, return_state=False) # create the rollout function
+    rollout_fn = jax.jit(rollout_fn) # jit for speed
 
     rng = jax.random.PRNGKey(args.seed)
 
     def get_pheno(params):
-        img = cppn.generate_image(params)
-        z_img = clip.embed_img(img)
+        rollout_data = rollout_fn(rng, params)
+        z_img = rollout_data['z']
         return dict(params=params, z_img=z_img)
-    
+
     def mutate_fn(rng, params):
         if args.mutation == 'gaussian':
             noise = jax.random.normal(rng, params.shape)
@@ -112,7 +124,7 @@ def main(args):
         return archive, data
 
 
-    params_init = jnp.zeros((cppn.n_params, ))
+    params_init = jnp.zeros((substrate.n_params, ))
     params_init = jax.vmap(mutate_fn, in_axes=(0, None))(split(rng, args.pop_size), params_init)
     scan_fn = lambda _, p: (None, get_pheno(p))
     _, phenos_init = jax.lax.scan(scan_fn, None, params_init)

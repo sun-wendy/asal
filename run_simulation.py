@@ -10,7 +10,7 @@ import numpy as np
 
 if __name__ == "__main__":
     fm = foundation_models.create_foundation_model('clip')
-    substrate = substrates.create_substrate('boids')
+    substrate = substrates.create_substrate('gol_compete')
     rollout_fn = partial(rollout_simulation, s0=None, substrate=substrate, fm=fm, rollout_steps=substrate.rollout_steps, time_sampling='video', img_size=224, return_state=False) # create the rollout function
     rollout_fn = jax.jit(rollout_fn) # jit for speed
     # now you can use rollout_fn as you need...
