@@ -15,17 +15,12 @@ if __name__ == "__main__":
     parser.add_argument("--save_dir", type=str, default="data", help="path to save results to")
     parser.add_argument("--substrate", type=str, default="lenia", help="substrate to use")
     parser.add_argument("--noun_file", type=str, default="noun_list.txt", help="path of noun file")
-    parser.add_argument("--prompt", type=str, default="an image of a {}", help="prompt for CLIP")
     args = parser.parse_args()
     save_dir = args.save_dir
 
     # Load nouns WITHOUT applying prompt template (just use raw nouns)
     with open(args.noun_file, 'r') as f:
         nouns = f.read().strip().split('\n')
-    
-    # The original map_elites code applies the prompt template, but for visualization,
-    # we'll just use the raw nouns
-    # formatted_nouns = [args.prompt.format(noun) for noun in nouns]
 
     # Create substrate
     substrate = substrates.create_substrate(args.substrate)
@@ -49,10 +44,11 @@ if __name__ == "__main__":
     
     # 2. Number of transfers vs iteration
     plt.subplot(1, 2, 2)
-    plt.plot(iterations, data['n_transfers'])
+    cumulative_transfers = np.cumsum(data['n_transfers'])
+    plt.plot(iterations, cumulative_transfers)
     plt.xlabel('Iterations')
-    plt.ylabel('Number of Transfers')
-    plt.title('Transfers vs Iterations')
+    plt.ylabel('Cumulative Number of Transfers')
+    plt.title('Cumulative Transfers vs Iterations')
     plt.grid(True)
     
     plt.tight_layout()
@@ -60,28 +56,20 @@ if __name__ == "__main__":
     plt.close()
     
 
-
     # Initialize rng
     rng = jax.random.PRNGKey(0)
     
-    # Define function to render each parameter set
-    def render_fn(params):
-        state = substrate.init_state(rng, params)
-        img = substrate.render_state(state, params)
-        return img
+    # # Define function to render each parameter set
+    # def render_fn(params):
+    #     state = substrate.init_state(rng, params)
+    #     img = substrate.render_state(state, params)
+    #     return img
     
-    def render_evolved_state(params, steps=1):
-        state = substrate.init_state(rng, params)
-        # Run simulation for several steps
-        for _ in range(steps):
-            state = substrate.step_state(rng, state, params)
-        # Then render
-        img = substrate.render_state(state, params)
-        return img
-    
-    # Use vmap to render all images
-    imgs = jax.vmap(render_fn)(archive['pheno']['params'])
-    imgs = np.array(imgs)
+    # # Use vmap to render all images
+    # imgs = jax.vmap(render_fn)(archive['pheno']['params'])
+    # imgs = np.array(imgs)
+
+    imgs = np.array(archive['pheno']['img'])
     print(imgs.shape)
     
     # Determine dimensions

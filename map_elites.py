@@ -72,7 +72,8 @@ def main(args):
     def get_pheno(params):
         rollout_data = rollout_fn(rng, params)
         z_img = rollout_data['z']
-        return dict(params=params, z_img=z_img)
+        img = rollout_data['rgb']
+        return dict(params=params, z_img=z_img, img=img)
 
     def mutate_fn(rng, params):
         if args.mutation == 'gaussian':
