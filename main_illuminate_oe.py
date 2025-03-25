@@ -53,7 +53,14 @@ def main(args):
     if args.rollout_steps is None:
         args.rollout_steps = substrate.rollout_steps
     rollout_fn_ = partial(rollout_simulation_scale, s0=None, substrate=substrate, fm=fm, rollout_steps=args.rollout_steps, time_sampling=args.time_sampling, img_size=224, return_state=False)
-    rollout_fn = jax.jit(lambda rng, p: dict(params=p, **rollout_fn_(rng, p)))
+    
+    # Modified rollout function to calculate and include open-endedness score
+    def _rollout_with_oe(rng, p):
+        result = rollout_fn_(rng, p)
+        oe_score = asal_metrics.calc_open_endedness_score(result['z'])
+        return dict(params=p, oe_score=oe_score, **result)
+    
+    rollout_fn = jax.jit(_rollout_with_oe)
 
     rng = jax.random.PRNGKey(args.seed)
 
@@ -99,7 +106,8 @@ def main(args):
         (D, to_kill_diversity, _), _ = jax.lax.scan(kill_least, (D, to_kill, 0), None, length=n_child_diversity) # do this loop {bs} times
         print("Killed least diverse")
 
-        open_endedness_scores = jax.vmap(asal_metrics.calc_open_endedness_score)(X)
+        # Use cached open-endedness scores instead of recalculating
+        open_endedness_scores = pop['oe_score']
         mask = jnp.ones(args.pop_size+args.n_child, dtype=jnp.bool_)
         mask = mask.at[to_kill_diversity].set(False)
         masked_scores = jnp.where(mask, open_endedness_scores, -jnp.inf)
@@ -126,7 +134,7 @@ def main(args):
 
         # loss = -D.min(axis=-1).mean()
         illumination_loss = asal_metrics.calc_illumination_score(pop['z'][:, -1, :]) # calculate the illumination score
-        oe_score = jnp.mean(jax.vmap(asal_metrics.calc_open_endedness_score)(pop['z']))
+        oe_score = jnp.mean(pop['oe_score'])  # Use cached scores
         return pop, dict(illumination_loss=illumination_loss, oe_score=oe_score)
 
     data = []
