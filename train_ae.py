@@ -10,8 +10,7 @@ import pandas as pd
 import substrates
 from rollout import rollout_simulation
 
-
-# === VAE Definition ===
+# === AE Definition ===
 class Encoder(nn.Module):
     latent_dim: int
     @nn.compact
@@ -21,9 +20,8 @@ class Encoder(nn.Module):
         x = nn.Conv(64, (4, 4), strides=(2, 2))(x)
         x = nn.relu(x)
         x = x.reshape((x.shape[0], -1))
-        mu = nn.Dense(self.latent_dim)(x)
-        logvar = nn.Dense(self.latent_dim)(x)
-        return mu, logvar
+        z = nn.Dense(self.latent_dim)(x)
+        return z
 
 class Decoder(nn.Module):
     latent_dim: int
@@ -32,33 +30,27 @@ class Decoder(nn.Module):
         x = nn.Dense(8 * 8 * 64)(z)
         x = x.reshape((-1, 8, 8, 64))
         x = nn.ConvTranspose(64, (4, 4), strides=(2, 2))(x)
-        x = nn.relu(x)
+        x = nn.leaky_relu(x)
         x = nn.ConvTranspose(32, (4, 4), strides=(2, 2))(x)
-        x = nn.relu(x)
+        x = nn.leaky_relu(x)
         x = nn.ConvTranspose(3, (4, 4), strides=(2, 2))(x)
-        x = nn.sigmoid(x)
+        # x = nn.sigmoid(x)
         return x
 
-class VAE(nn.Module):
+class AE(nn.Module):
     latent_dim: int
     def setup(self):
         self.encoder = Encoder(self.latent_dim)
         self.decoder = Decoder(self.latent_dim)
-    def __call__(self, x, rng):
-        mu, logvar = self.encoder(x)
-        std = jnp.exp(0.5 * logvar)
-        eps = random.normal(rng, std.shape)
-        z = mu + eps * std
+    def __call__(self, x):
+        z = self.encoder(x)
         recon = self.decoder(z)
-        return recon, mu, logvar
+        return recon
 
 # === Loss Function ===
-def compute_vae_loss(x, recon, mu, logvar):
-    # recon_loss = jnp.mean((x - recon) ** 2)
-    # kl = -0.5 * jnp.mean(1 + logvar - mu**2 - jnp.exp(logvar))
-    bce = -jnp.mean(x * jnp.log(recon + 1e-6) + (1 - x) * jnp.log(1 - recon + 1e-6))
-    return bce  # recon_loss + 0.0 * kl
-
+def compute_ae_loss(x, recon):
+    recon_loss = jnp.mean((x - recon) ** 2)
+    return recon_loss
 
 # === Generate a new dataset of frames per step ===
 def generate_full_dataset(rng, substrate, num_rollouts=512, rollout_steps=256, img_size=64):
@@ -81,7 +73,6 @@ def get_batch_from_dataset(dataset, rng, batch_size):
     indices = jax.random.randint(rng, (batch_size,), 0, dataset.shape[0])
     return dataset[indices]
 
-
 # === Visualize ===
 def show_recon(input_batch, recon_batch, prefix="recon", n=5):
     input_batch = jnp.clip(input_batch, 0.0, 1.0)
@@ -97,16 +88,15 @@ def show_recon(input_batch, recon_batch, prefix="recon", n=5):
         plt.savefig(f"{prefix}_{i}.png")
         plt.close(fig)
 
-
 # === Evaluation Step ===
 @jit
-def eval_step(params, batch, rng):
-    recon, mu, logvar = VAE(latent_dim).apply({'params': params}, batch, rng)
-    loss = compute_vae_loss(batch, recon, mu, logvar)
+def eval_step(params, batch):
+    recon = AE(latent_dim).apply({'params': params}, batch)
+    loss = compute_ae_loss(batch, recon)
     return loss, recon
 
 # === Training Loop ===
-def train_vae():
+def train_ae():
     global latent_dim
     latent_dim = 128
     learning_rate = 1e-3
@@ -119,9 +109,9 @@ def train_vae():
     substrate = substrates.FlattenSubstrateParameters(substrate)
 
     # Init model and optimizer
-    vae = VAE(latent_dim)
+    ae = AE(latent_dim)
     dummy_input = jnp.ones((1, img_size, img_size, 3), dtype=jnp.float32)
-    params = vae.init(rng, dummy_input, rng)['params']
+    params = ae.init(rng, dummy_input)['params']
     tx = optax.adam(learning_rate)
     opt_state = tx.init(params)
 
@@ -133,10 +123,10 @@ def train_vae():
     test_losses = []
 
     @jit
-    def train_step(params, opt_state, batch, step_rng):
+    def train_step(params, opt_state, batch):
         def loss_fn(p):
-            recon, mu, logvar = VAE(latent_dim).apply({'params': p}, batch, step_rng)
-            loss = compute_vae_loss(batch, recon, mu, logvar)
+            recon = AE(latent_dim).apply({'params': p}, batch)
+            loss = compute_ae_loss(batch, recon)
             return loss, recon
         (loss, recon), grads = value_and_grad(loss_fn, has_aux=True)(params)
         updates, opt_state = tx.update(grads, opt_state)
@@ -149,10 +139,10 @@ def train_vae():
         dataset = generate_full_dataset(dataset_rng, substrate, num_rollouts=128, rollout_steps=256, img_size=img_size)
         batch = get_batch_from_dataset(dataset, step_rng, batch_size)
 
-        params, opt_state, loss, recon = train_step(params, opt_state, batch, step_rng)
+        params, opt_state, loss, recon = train_step(params, opt_state, batch)
 
         test_batch = get_batch_from_dataset(test_dataset, step_rng, batch_size)
-        test_loss, test_recon = eval_step(params, test_batch, step_rng)
+        test_loss, test_recon = eval_step(params, test_batch)
 
         train_losses.append(float(loss))
         test_losses.append(float(test_loss))
@@ -162,7 +152,8 @@ def train_vae():
             show_recon(batch, recon, prefix="train_recon")
             show_recon(test_batch, test_recon, prefix="test_recon")
 
-    # === Plot loss curves ===
+
+    # === Plot loss curves using exponential moving average ===
     df = pd.DataFrame({'train': train_losses, 'test': test_losses})
     ema = df.ewm(span=1000).mean()
     plt.plot(ema['train'], label='EMA Train Loss')
@@ -174,6 +165,5 @@ def train_vae():
     plt.savefig("smoothed_loss_curve.png")
     plt.close()
 
-
 if __name__ == "__main__":
-    train_vae()
+    train_ae()
