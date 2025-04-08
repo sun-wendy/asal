@@ -6,10 +6,7 @@ from jax import random, jit, value_and_grad
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import pickle
-
-import substrates
-from rollout import rollout_simulation
+from tensorflow.keras.datasets import mnist
 
 
 # === AE Definition ===
@@ -29,14 +26,13 @@ class Decoder(nn.Module):
     latent_dim: int
     @nn.compact
     def __call__(self, z):
-        x = nn.Dense(8 * 8 * 64)(z)
-        x = x.reshape((-1, 8, 8, 64))
-        x = nn.ConvTranspose(64, (4, 4), strides=(2, 2))(x)
+        x = nn.Dense(7 * 7 * 64)(z)
+        x = x.reshape((-1, 7, 7, 64))
+        x = nn.ConvTranspose(64, (4, 4), strides=(2, 2), padding='SAME')(x)
         x = nn.leaky_relu(x)
-        x = nn.ConvTranspose(32, (4, 4), strides=(2, 2))(x)
+        x = nn.ConvTranspose(32, (4, 4), strides=(2, 2), padding='SAME')(x)
         x = nn.leaky_relu(x)
-        x = nn.ConvTranspose(3, (4, 4), strides=(2, 2))(x)
-        # x = nn.sigmoid(x)
+        x = nn.ConvTranspose(1, (4, 4), strides=(1, 1), padding='SAME')(x)
         return x
 
 class AE(nn.Module):
@@ -54,25 +50,17 @@ def compute_ae_loss(x, recon):
     recon_loss = jnp.mean((x - recon) ** 2)
     return recon_loss
 
-# === Generate a new dataset of frames per step ===
-def generate_full_dataset(rng, substrate, num_rollouts=512, rollout_steps=256, img_size=64):
-    rollout_rngs = jax.random.split(rng, num_rollouts)
-    param_shape = substrate.default_params(jax.random.PRNGKey(0)).shape
-    flat_params = jnp.full(param_shape, 6152)
+# === Load MNIST Dataset ===
+def load_mnist():
+    (train_x, _), (test_x, _) = mnist.load_data()
+    train_x = train_x.astype(np.float32) / 255.0
+    test_x = test_x.astype(np.float32) / 255.0
+    train_x = np.expand_dims(train_x, -1)  # Shape: (N, 28, 28, 1)
+    test_x = np.expand_dims(test_x, -1)
+    return train_x, test_x
 
-    def rollout_fn(rng_i):
-        result = rollout_simulation(rng_i, params=flat_params, substrate=substrate, fm=None,
-                                    rollout_steps=rollout_steps, time_sampling='video',
-                                    img_size=img_size, return_state=False)
-        return result['rgb']
-
-    vids = jax.vmap(rollout_fn)(rollout_rngs)
-    vids = vids.reshape(-1, img_size, img_size, 3)
-    return vids
-
-# === Sample batch from full dataset ===
-def get_batch_from_dataset(dataset, rng, batch_size):
-    indices = jax.random.randint(rng, (batch_size,), 0, dataset.shape[0])
+# === Sample batch ===
+def get_batch(dataset, indices):
     return dataset[indices]
 
 # === Visualize ===
@@ -81,10 +69,10 @@ def show_recon(input_batch, recon_batch, prefix="recon", n=5):
     recon_batch = jnp.clip(recon_batch, 0.0, 1.0)
     for i in range(n):
         fig, ax = plt.subplots(1, 2)
-        ax[0].imshow(np.array(input_batch[i]))
+        ax[0].imshow(np.squeeze(input_batch[i]), cmap='gray')
         ax[0].set_title("Input")
         ax[0].axis('off')
-        ax[1].imshow(np.array(recon_batch[i]))
+        ax[1].imshow(np.squeeze(recon_batch[i]), cmap='gray')
         ax[1].set_title("Reconstruction")
         ax[1].axis('off')
         plt.savefig(f"{prefix}_{i}.png")
@@ -100,29 +88,33 @@ def eval_step(params, batch):
 # === Training Loop ===
 def train_ae():
     global latent_dim
-    latent_dim = 128
+    latent_dim = 32
     learning_rate = 1e-3
-    batch_size = 1024
-    img_size = 64
-    total_steps = 30000
+    batch_size = 128
+    total_steps = 10000
 
     rng = jax.random.PRNGKey(0)
-    substrate = substrates.create_substrate("gol")
-    substrate = substrates.FlattenSubstrateParameters(substrate)
+    train_x, test_x = load_mnist()
+    train_x = jnp.array(train_x)
+    test_x = jnp.array(test_x)
 
     # Init model and optimizer
     ae = AE(latent_dim)
-    dummy_input = jnp.ones((1, img_size, img_size, 3), dtype=jnp.float32)
+    dummy_input = jnp.ones((1, 28, 28, 1), dtype=jnp.float32)
     params = ae.init(rng, dummy_input)['params']
     tx = optax.adam(learning_rate)
     opt_state = tx.init(params)
 
-    # Create fixed test dataset
-    test_rng = random.PRNGKey(42)
-    test_dataset = generate_full_dataset(test_rng, substrate, num_rollouts=128, rollout_steps=256, img_size=img_size)
-
     train_losses = []
     test_losses = []
+
+    # Shuffle training set once to avoid overlap with test data
+    train_rng, rng = jax.random.split(rng)
+    train_perm = jax.random.permutation(train_rng, train_x.shape[0])
+    train_x = train_x[train_perm]
+
+    # Training epoch-style index
+    train_index = 0
 
     @jit
     def train_step(params, opt_state, batch):
@@ -136,14 +128,22 @@ def train_ae():
         return new_params, opt_state, loss, recon
 
     for step in range(1, total_steps + 1):
+        # Epoch-style non-repeating batching
+        if train_index + batch_size > train_x.shape[0]:
+            # Reshuffle and reset
+            shuffle_rng, rng = random.split(rng)
+            train_perm = jax.random.permutation(shuffle_rng, train_x.shape[0])
+            train_x = train_x[train_perm]
+            train_index = 0
+
+        batch = train_x[train_index:train_index + batch_size]
+        train_index += batch_size
+
         rng, step_rng = random.split(rng)
-        dataset_rng, step_rng = random.split(step_rng)
-        dataset = generate_full_dataset(dataset_rng, substrate, num_rollouts=128, rollout_steps=256, img_size=img_size)
-        batch = get_batch_from_dataset(dataset, step_rng, batch_size)
+        test_indices = jax.random.randint(step_rng, (batch_size,), 0, test_x.shape[0])
+        test_batch = get_batch(test_x, test_indices)
 
         params, opt_state, loss, recon = train_step(params, opt_state, batch)
-
-        test_batch = get_batch_from_dataset(test_dataset, step_rng, batch_size)
         test_loss, test_recon = eval_step(params, test_batch)
 
         train_losses.append(float(loss))
@@ -154,10 +154,9 @@ def train_ae():
             show_recon(batch, recon, prefix="train_recon")
             show_recon(test_batch, test_recon, prefix="test_recon")
 
-
-    # === Plot loss curves using exponential moving average ===
+    # === Plot loss curves ===
     df = pd.DataFrame({'train': train_losses, 'test': test_losses})
-    ema = df.ewm(span=1000).mean()
+    ema = df.ewm(span=100).mean()
     plt.plot(df['train'], label='Raw Train Loss', alpha=0.5)
     plt.plot(df['test'], label='Raw Test Loss', alpha=0.5)
     plt.plot(ema['train'], label='EMA Train Loss')
@@ -166,14 +165,8 @@ def train_ae():
     plt.ylabel("Loss")
     plt.legend()
     plt.title("Loss Curve with EMA and Raw Loss")
-    plt.savefig("loss_curve.png")
+    plt.savefig("mnist_loss_curve.png")
     plt.close()
-
-    # === Save encoder and decoder parameters ===
-    with open("encoder_params.pkl", "wb") as f:
-        pickle.dump(params['encoder'], f)
-    with open("decoder_params.pkl", "wb") as f:
-        pickle.dump(params['decoder'], f)
 
 
 if __name__ == "__main__":
