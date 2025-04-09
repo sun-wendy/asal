@@ -6,6 +6,7 @@ from jax import random, jit, value_and_grad
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import pickle
 
 import substrates
 from rollout import rollout_simulation
@@ -54,10 +55,10 @@ class VAE(nn.Module):
 
 # === Loss Function ===
 def compute_vae_loss(x, recon, mu, logvar):
-    # recon_loss = jnp.mean((x - recon) ** 2)
-    # kl = -0.5 * jnp.mean(1 + logvar - mu**2 - jnp.exp(logvar))
-    bce = -jnp.mean(x * jnp.log(recon + 1e-6) + (1 - x) * jnp.log(1 - recon + 1e-6))
-    return bce  # recon_loss + 0.0 * kl
+    recon_loss = jnp.mean((x - recon) ** 2)
+    kl = -0.5 * jnp.mean(1 + logvar - mu**2 - jnp.exp(logvar))
+    # bce = -jnp.mean(x * jnp.log(recon + 1e-6) + (1 - x) * jnp.log(1 - recon + 1e-6))
+    return recon_loss + 0.01 * kl
 
 
 # === Generate a new dataset of frames per step ===
@@ -165,14 +166,22 @@ def train_vae():
     # === Plot loss curves ===
     df = pd.DataFrame({'train': train_losses, 'test': test_losses})
     ema = df.ewm(span=1000).mean()
+    plt.plot(df['train'], label='Raw Train Loss', alpha=0.5)
+    plt.plot(df['test'], label='Raw Test Loss', alpha=0.5)
     plt.plot(ema['train'], label='EMA Train Loss')
     plt.plot(ema['test'], label='EMA Test Loss')
     plt.xlabel("Training Step")
     plt.ylabel("Loss")
     plt.legend()
-    plt.title("Exponential Moving Average of Loss")
-    plt.savefig("smoothed_loss_curve.png")
+    plt.title("Loss Curve with EMA and Raw Loss")
+    plt.savefig("loss_curve.png")
     plt.close()
+
+    # === Save encoder and decoder parameters ===
+    with open("encoder_params.pkl", "wb") as f:
+        pickle.dump(params['encoder'], f)
+    with open("decoder_params.pkl", "wb") as f:
+        pickle.dump(params['decoder'], f)
 
 
 if __name__ == "__main__":

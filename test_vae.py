@@ -15,7 +15,7 @@ import substrates
 from rollout import rollout_simulation
 
 
-# === AE Definition ===
+# === VAE Definition ===
 class Encoder(nn.Module):
     latent_dim: int
     @nn.compact
@@ -25,8 +25,9 @@ class Encoder(nn.Module):
         x = nn.Conv(64, (4, 4), strides=(2, 2))(x)
         x = nn.relu(x)
         x = x.reshape((x.shape[0], -1))
-        z = nn.Dense(self.latent_dim)(x)
-        return z
+        mu = nn.Dense(self.latent_dim)(x)
+        logvar = nn.Dense(self.latent_dim)(x)
+        return mu, logvar
 
 class Decoder(nn.Module):
     latent_dim: int
@@ -35,12 +36,25 @@ class Decoder(nn.Module):
         x = nn.Dense(8 * 8 * 64)(z)
         x = x.reshape((-1, 8, 8, 64))
         x = nn.ConvTranspose(64, (4, 4), strides=(2, 2))(x)
-        x = nn.leaky_relu(x)
+        x = nn.relu(x)
         x = nn.ConvTranspose(32, (4, 4), strides=(2, 2))(x)
-        x = nn.leaky_relu(x)
+        x = nn.relu(x)
         x = nn.ConvTranspose(3, (4, 4), strides=(2, 2))(x)
-        # x = nn.sigmoid(x)
+        x = nn.sigmoid(x)
         return x
+
+class VAE(nn.Module):
+    latent_dim: int
+    def setup(self):
+        self.encoder = Encoder(self.latent_dim)
+        self.decoder = Decoder(self.latent_dim)
+    def __call__(self, x, rng):
+        mu, logvar = self.encoder(x)
+        std = jnp.exp(0.5 * logvar)
+        eps = random.normal(rng, std.shape)
+        z = mu + eps * std
+        recon = self.decoder(z)
+        return recon, mu, logvar
 
 
 # === Visualize ===
@@ -78,8 +92,7 @@ def sample_from_gaussian_latent(decoder, decoder_params, latent_dim=128, n=5, pr
 
 # Recreate model
 latent_dim = 128  # or whatever value you used
-encoder = Encoder(latent_dim)
-decoder = Decoder(latent_dim)
+vae = VAE(latent_dim)
 
 # Load saved params
 with open("encoder_params.pkl", "rb") as f:
@@ -88,10 +101,9 @@ with open("encoder_params.pkl", "rb") as f:
 with open("decoder_params.pkl", "rb") as f:
     decoder_params = pickle.load(f)
 
-sample_from_gaussian_latent(decoder, decoder_params, latent_dim=latent_dim, n=5)
+# sample_from_gaussian_latent(decoder, decoder_params, latent_dim=latent_dim, n=5)
 
 
-"""
 # === Visualization ===
 def show_recon_frame(input_img, recon_img, path):
     input_img = jnp.clip(input_img, 0.0, 1.0)
@@ -121,8 +133,8 @@ substrate = substrates.FlattenSubstrateParameters(substrate)
 
 frames = generate_single_rollout(rng, substrate)  # (256, 64, 64, 3)
 frames = jnp.array(frames)
-z = encoder.apply({'params': freeze(encoder_params)}, frames)
-recon = decoder.apply({'params': freeze(decoder_params)}, z)
+vae_params = {'encoder': encoder_params, 'decoder': decoder_params}
+recon, _, _ = vae.apply({'params': vae_params}, frames, rng)
 
 # === Save individual frames ===
 output_folder = "simulation_recon_frames"
@@ -142,4 +154,4 @@ with imageio.get_writer(video_path, fps=20) as writer:
         writer.append_data(img)
 
 print(f"Video saved to {video_path}")
-"""
+

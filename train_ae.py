@@ -75,6 +75,7 @@ def get_batch_from_dataset(dataset, rng, batch_size):
     indices = jax.random.randint(rng, (batch_size,), 0, dataset.shape[0])
     return dataset[indices]
 
+
 # === Visualize ===
 def show_recon(input_batch, recon_batch, prefix="recon", n=5):
     input_batch = jnp.clip(input_batch, 0.0, 1.0)
@@ -89,6 +90,7 @@ def show_recon(input_batch, recon_batch, prefix="recon", n=5):
         ax[1].axis('off')
         plt.savefig(f"{prefix}_{i}.png")
         plt.close(fig)
+
 
 # === Evaluation Step ===
 @jit
