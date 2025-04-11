@@ -264,7 +264,7 @@ def train_bert(batch_size: int = 32, rollout_steps: int = 256, train_steps: int 
             flat_params = jnp.full(substrate.default_params(jax.random.PRNGKey(0)).shape, 6152)
             result = rollout_simulation(
                 rng, params=flat_params, substrate=substrate, fm=None,
-                rollout_steps=rollout_steps, time_sampling='video',
+                rollout_steps=64, time_sampling='video',
                 img_size=img_size, return_state=False
             )
             video = np.array(result['rgb'])
@@ -277,7 +277,7 @@ def train_bert(batch_size: int = 32, rollout_steps: int = 256, train_steps: int 
             logits, _ = model.apply({'params': state.params}, x_masked, train=False)
             pred = (logits > 0).astype(jnp.float32)
             recon = jnp.where(mask == 1.0, pred, x_orig)
-            recon_seq = np.array(recon).reshape(rollout_steps, num_tokens, token_dim)
+            recon_seq = np.array(recon).reshape(64, num_tokens, token_dim)
             
             gt_folder = "bert_eval_groundtruth"
             rec_folder = "bert_eval_reconstruction"
@@ -285,7 +285,7 @@ def train_bert(batch_size: int = 32, rollout_steps: int = 256, train_steps: int 
             os.makedirs(gt_folder, exist_ok=True)
             os.makedirs(rec_folder, exist_ok=True)
             os.makedirs(side_folder, exist_ok=True)
-            for i in range(rollout_steps):
+            for i in range(64):
                 gt_frame = np.repeat(tokens_to_frame(tokens_full[i], img_size=img_size, grid_size=grid_size), 3, axis=-1)
                 rec_frame = np.repeat(tokens_to_frame(recon_seq[i], img_size=img_size, grid_size=grid_size), 3, axis=-1)
                 imageio.imwrite(os.path.join(gt_folder, f"frame_{i:04d}.png"), (gt_frame * 255).astype(np.uint8))

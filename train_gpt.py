@@ -338,7 +338,7 @@ def train_gpt(batch_size: int = 32, rollout_steps: int = 256, train_steps: int =
         print(f"[Step {step}] Loss: {loss:.6f}")
         
         if step % eval_every == 0:
-            evaluate_rollout_vgpt(model, state, substrate, rng, rollout_steps, img_size, grid_size, t_skip, step)
+            evaluate_rollout_vgpt(model, state, substrate, rng, 64, img_size, grid_size, t_skip, step)
     
     with open("gpt_params.pkl", "wb") as f:
         pickle.dump(state.params, f)
