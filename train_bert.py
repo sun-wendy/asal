@@ -26,6 +26,10 @@ from rollout import rollout_simulation
 from util_gol import frame_to_tokens, tokens_to_frame, generate_token_dataset
 
 
+# Use a special value for masked tokens that is outside the normal range (0 or 1).
+MASK_VALUE = -1.0
+
+
 # BERT model
 @dataclass
 class BERTConfig:
@@ -58,7 +62,7 @@ class FullAttention(nn.Module):
         q = q.reshape(B, T, self.n_head, self.head_size).swapaxes(1,2)
         k = k.reshape(B, T, self.n_head, self.head_size).swapaxes(1,2)
         v = v.reshape(B, T, self.n_head, self.head_size).swapaxes(1,2)
-        # For full bidirectional attention, we use a mask of all ones.
+        # Full bidirectional attention: use a mask of ones.
         mask = jnp.ones((T, T), dtype=jnp.float32).reshape(1, 1, T, T)
         att = (q @ k.swapaxes(-2, -1)) * (1.0 / jnp.sqrt(self.head_size))
         att = jnp.where(mask == 1.0, att, float('-inf'))
@@ -107,20 +111,16 @@ class BERT(nn.Module):
 
     def setup(self):
         config = self.config
-        # Input projection: from token vector (token_dim) to transformer embedding space.
         self.token_proj = nn.Dense(config.n_embd)
-        # Positional embeddings.
         self.wpe = nn.Embed(config.block_size, config.n_embd)
         self.drop = nn.Dropout(config.dropout)
         self.h = [Block(config) for _ in range(config.n_layer)]
         self.ln_f = nn.LayerNorm()
-        # Output head: project from transformer embedding to token_dim.
         self.head = nn.Dense(config.token_dim)
 
     def __call__(self, tokens: jnp.ndarray, *, train: bool) -> Tuple[jnp.ndarray, Optional[jnp.ndarray]]:
         """
-        Expects tokens of shape (B, L, token_dim) where
-        L = rollout_steps * num_tokens.
+        Expects tokens of shape (B, L, token_dim) where L = rollout_steps * num_tokens.
         """
         B, T, d = tokens.shape
         assert d == self.config.token_dim, f"Token dim mismatch: got {d}, expected {self.config.token_dim}"
@@ -137,7 +137,7 @@ class BERT(nn.Module):
 
     def configure_optimizers(self, params, weight_decay, learning_rate, betas):
         def get_optimizer(decay):
-            return optax.adamw(learning_rate=learning_rate,
+            return optax.adamw(learning_rate=learning_rate, 
                                b1=betas[0], b2=betas[1],
                                weight_decay=decay)
         def partition_fn(path, x):
@@ -173,36 +173,23 @@ class BERT(nn.Module):
             )
         else:
             lr_schedule = learning_rate
-        tx = self.configure_optimizers(params, weight_decay=weight_decay, learning_rate=lr_schedule,
+        tx = self.configure_optimizers(params, weight_decay=weight_decay,
+                                       learning_rate=lr_schedule,
                                        betas=(beta1, beta2))
         return train_state.TrainState.create(apply_fn=self.apply, params=params, tx=tx)
 
-    def generate_mask(self, x: jnp.ndarray, mask_rate: float=0.15) -> jnp.ndarray:
-        """
-        Generate a binary mask for x of shape (B, L, 1) with probability mask_rate.
-        """
-        B, L, _ = x.shape
-        rng = self.make_rng("mask")
-        mask = jax.random.bernoulli(rng, p=mask_rate, shape=(B, L, 1)).astype(jnp.float32)
-        return mask
-
-    def generate_reconstruction(self, x: jnp.ndarray, logits: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
-        """
-        Reconstruct the sequence by replacing masked positions in x with the model's prediction.
-        Predictions are thresholded at 0.
-        """
-        pred = (logits > 0).astype(jnp.float32)
-        recon = x * (1 - mask) + pred * mask
-        return recon
-
 
 # Training pipeline
-def train_bert(batch_size: int = 32, rollout_steps: int = 256, train_steps: int = 3000, eval_every: int = 200, patches_per_dim: int = 2, seed: int = 42):
+def train_bert(batch_size: int = 32, rollout_steps: int = 256, train_steps: int = 3000, eval_every: int = 200, patches_per_dim: int = 2, mask_rate: float = 0.15, seed: int = 42):
     """
-    Train a BERT-style vision model with the given patches_per_dim hyperparameter.
+    Train a BERT-style vision model with a masked prediction objective.
+    Here we mimic actual BERT training by replacing a percentage of tokens with a special mask token.
+    In this example, when a token is masked, we replace its value with a constant MASK_VALUE (set to -1.0)
+    and only compute the BCE loss on the masked positions.
     """
-    wandb.init(project="gol_world_model", name="bert_patches{}_batch{}_seed{}".format(patches_per_dim, batch_size, seed), 
+    wandb.init(project="gol_world_model", name=f"bert_patches{patches_per_dim}_mask{mask_rate}_batch{batch_size}_seed{seed}", 
                config={"patches_per_dim": patches_per_dim,
+                       "mask_rate": mask_rate,
                        "rollout_steps": rollout_steps,
                        "train_steps": train_steps,
                        "batch_size": batch_size,
@@ -239,18 +226,21 @@ def train_bert(batch_size: int = 32, rollout_steps: int = 256, train_steps: int 
         """
         tokens_batch: shape (B, rollout_steps, num_tokens, token_dim)
         We flatten it to (B, L, token_dim), with L = rollout_steps * num_tokens.
-        Then we randomly mask tokens (mask_rate = 0.15) and compute BCE loss only on masked tokens.
+        For BERT-style training, we randomly select a subset of positions to mask.
+        At masked positions, we replace the original token with the MASK_VALUE.
+        The loss (BCE) is computed only on the masked positions.
         """
         def loss_fn(params):
             B, R, N, D = tokens_batch.shape
             x_orig = tokens_batch.reshape(B, -1, D)  # shape: (B, L, token_dim)
-            mask = jax.random.bernoulli(dropout_rng, p=0.15, shape=x_orig.shape[:-1])
+            mask = jax.random.bernoulli(dropout_rng, p=mask_rate, shape=x_orig.shape[:-1])
             mask = mask[..., None].astype(jnp.float32)  # shape: (B, L, 1)
-            x_masked = x_orig * (1 - mask)
+            # Replace masked positions with MASK_VALUE
+            x_masked = jnp.where(mask == 1.0, MASK_VALUE, x_orig)
             logits, _ = model.apply({'params': params}, x_masked, train=True, rngs={'dropout': dropout_rng})
-            loss = optax.sigmoid_binary_cross_entropy(logits, x_orig)
-            loss = (loss * mask).mean()
-            return loss
+            loss_all = optax.sigmoid_binary_cross_entropy(logits, x_orig)
+            loss_masked = (loss_all * mask).mean()
+            return loss_masked
         loss, grads = jax.value_and_grad(loss_fn)(state.params)
         state = state.apply_gradients(grads=grads)
         return state, loss
@@ -281,12 +271,12 @@ def train_bert(batch_size: int = 32, rollout_steps: int = 256, train_steps: int 
             gray_video = video[..., :1]
             tokens_full = np.array([frame_to_tokens(frame, grid_size) for frame in gray_video])
             x_orig = tokens_full.reshape(1, -1, token_dim)
-            mask = jax.random.bernoulli(dropout_rng, p=0.15, shape=x_orig.shape[:-1])
+            mask = jax.random.bernoulli(dropout_rng, p=mask_rate, shape=x_orig.shape[:-1])
             mask = mask[..., None].astype(jnp.float32)
-            x_masked = x_orig * (1 - mask)
+            x_masked = jnp.where(mask == 1.0, MASK_VALUE, x_orig)
             logits, _ = model.apply({'params': state.params}, x_masked, train=False)
             pred = (logits > 0).astype(jnp.float32)
-            recon = x_orig * (1 - mask) + pred * mask
+            recon = jnp.where(mask == 1.0, pred, x_orig)
             recon_seq = np.array(recon).reshape(rollout_steps, num_tokens, token_dim)
             
             gt_folder = "bert_eval_groundtruth"
@@ -314,9 +304,19 @@ def train_bert(batch_size: int = 32, rollout_steps: int = 256, train_steps: int 
                 "eval_step": step
             })
     
-    with open("bert_params_patches{}.pkl".format(patches_per_dim), "wb") as f:
+    plt.figure(figsize=(6,4))
+    plt.plot(train_losses, label="Train Loss", alpha=0.8)
+    plt.xlabel("Training Step")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.title("BERT-Style Vision Model Training Loss")
+    plt.savefig("bert_loss_curve.png")
+    plt.close()
+    print("[Done] Training loss curve saved to bert_loss_curve.png")
+    
+    with open(f"bert_params_patches{patches_per_dim}.pkl", "wb") as f:
         pickle.dump(state.params, f)
-    print("[Done] Final model parameters saved to bert_params_patches{}.pkl".format(patches_per_dim))
+    print(f"[Done] Final model parameters saved to bert_params_patches{patches_per_dim}.pkl")
     wandb.finish()
 
 
@@ -328,6 +328,8 @@ if __name__ == "__main__":
     parser.add_argument("--eval_every", type=int, default=200)
     parser.add_argument("--patches_per_dim", type=int, default=2,
                         help="Number of patches per image dimension (e.g. 2 means 2x2 grid)")
+    parser.add_argument("--mask_rate", type=float, default=0.5,
+                        help="Mask rate for BERT objective")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for reproducibility")
     args = parser.parse_args()
@@ -340,4 +342,5 @@ if __name__ == "__main__":
                train_steps=args.train_steps, 
                eval_every=args.eval_every,
                patches_per_dim=args.patches_per_dim,
+               mask_rate=args.mask_rate,
                seed=args.seed)
