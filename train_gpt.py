@@ -349,7 +349,7 @@ def train_gpt(batch_size: int = 32, rollout_steps: int = 256, train_steps: int =
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--rollout_steps", type=int, default=256)
+    parser.add_argument("--rollout_steps", type=int, default=32)
     parser.add_argument("--train_steps", type=int, default=3000)
     parser.add_argument("--eval_every", type=int, default=200)
     parser.add_argument("--patches_per_dim", type=int, default=2,
