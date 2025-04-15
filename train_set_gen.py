@@ -96,9 +96,9 @@ def animate_game(game, num_iterations, filename, interval=200):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Generate Conway sets')
     parser.add_argument('--num_sim', type=int, default=10000, help='Number of simulations to generate')
-    parser.add_argument('--grid_size', type=int, default=32, help='Grid size')
+    parser.add_argument('--img_size', type=int, default=32, help='Grid size')
     parser.add_argument('--num_steps', type=int, default=10, help='Number of simulation steps to run')
     args = parser.parse_args()
 
-    generate_sets(A=args.num_sim, N=args.grid_size, I=args.num_steps, Toroidal=True, save_folder='data')
+    generate_sets(A=args.num_sim, N=args.img_size, I=args.num_steps, Toroidal=True, save_folder='data')
     # generate_test_sets()
