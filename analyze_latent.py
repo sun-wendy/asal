@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 from einops import rearrange
 from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
 from umap.umap_ import UMAP
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 
@@ -228,7 +229,7 @@ if __name__ == "__main__":
                         help="Dropout probability")
     # Analysis method and extraction parameters
     parser.add_argument("--analysis_method", type=str, default="umap",
-                        help="Analysis method to use: umap or tsne")
+                        help="Analysis method to use: umap, tsne, or pca")
     parser.add_argument("--layer_to_extract", type=int, default=11,
                         help="Transformer layer (0-indexed) to extract latent representations from")
     # Whether to apply an extra layer normalization after extraction
@@ -305,6 +306,9 @@ if __name__ == "__main__":
     elif args.analysis_method == "tsne":
         tsne = TSNE(n_components=2, random_state=42)
         all_latent_2d = tsne.fit_transform(all_latents)
+    elif args.analysis_method == "pca":
+        pca = PCA(n_components=2, random_state=42)
+        all_latent_2d = pca.fit_transform(all_latents)
 
     val_mask = (source == 0)
     test_mask = (source == 1)
@@ -365,8 +369,7 @@ if __name__ == "__main__":
     cbar.set_ticks(ticks)
     cbar.set_ticklabels([f"Early ({min_frame})", f"{(min_frame + max_frame) / 2:.0f}", f"Late ({max_frame})"], fontsize=14)
 
-    
-    
+    """
     # --- Begin Added Code for Annotating Regions with Example Frames ---
     # Divide the latent space into a grid (3x3) and annotate a cell only if
     # there is at least one datapoint inside the cell.
@@ -427,7 +430,7 @@ if __name__ == "__main__":
                                 pad=0)        # Remove extra padding.
             ax.add_artist(ab)
     # --- End Added Code for Annotating Regions ---
-    
+    """
     
     plt.tight_layout()
     plt.savefig(f"latent_{args.analysis_method}.png")

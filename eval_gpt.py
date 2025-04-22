@@ -329,10 +329,10 @@ if __name__ == "__main__":
     dummy_tx = optax.adam(learning_rate=0.0)
     state = train_state.TrainState.create(apply_fn=model.apply, params=freeze(loaded_params), tx=dummy_tx)
 
-    val_dataset = load_dataset_from_csv(args.val_csv, args.img_size, args.num_frames, grid_size)
-    print(f"Loaded validation dataset of shape: {val_dataset.shape}")
+    # val_dataset = load_dataset_from_csv(args.val_csv, args.img_size, args.num_frames, grid_size)
+    # print(f"Loaded validation dataset of shape: {val_dataset.shape}")
     pattern_dataset = load_dataset_from_csv(args.pattern_csv, args.img_size, 10, grid_size)
     print(f"Loaded pattern dataset of shape: {pattern_dataset.shape}")
 
-    evaluate(model, state, val_dataset, img_size=args.img_size, grid_size=grid_size, step=0, t_skip=args.t_skip, vis_all=False)
+    # evaluate(model, state, val_dataset, img_size=args.img_size, grid_size=grid_size, step=0, t_skip=args.t_skip, vis_all=False)
     evaluate(model, state, pattern_dataset, img_size=args.img_size, grid_size=grid_size, step=0, t_skip=args.t_skip, vis_all=True)

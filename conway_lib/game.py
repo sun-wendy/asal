@@ -4,6 +4,7 @@ import os
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 
+
 class ConwayGame:
     def __init__(self, toroidal=True, width=32, height=32, grid_size=1, order_mean=0.5, order_std=0.1):
         self.WIDTH, self.HEIGHT = width, height
@@ -364,6 +365,14 @@ class ConwayGame:
             self.place_r_pentomino()
         elif pattern_name == "gliders":
             self.place_gliders()
+        elif pattern_name == "glider":
+            self.place_glider(offset_x=0, offset_y=0)
+        elif pattern_name == "lwss":
+            self.place_lwss(offset_x=2, offset_y=2)
+        elif pattern_name == "mwss":
+            self.place_mwss(offset_x=1, offset_y=2)
+        elif pattern_name == "hwss":
+            self.place_hwss(offset_x=0, offset_y=1)
         else:
             print("inputted pattern not found")
             exit()
@@ -498,18 +507,13 @@ class ConwayGame:
 
     def place_lwss(self, offset_x=0, offset_y=0):
         """
-        Place a 5×4 Lightweight Spaceship at (offset_x, offset_y).
-        Pattern RLE (decoded):
-        O..O.
-        ....O
-        O...O
-        .OOOO
+        Place a 5×4 Lightweight Spaceship (LWSS) moving east at speed c/2.
         """
         pattern = [
-            "O..O.",
-            "....O",
-            "O...O",
-            ".OOOO",
+            ".O..O",  # row 0
+            "O....",  # row 1
+            "O...O",  # row 2
+            "OOOO.",  # row 3
         ]
         for i, row in enumerate(pattern):
             for j, ch in enumerate(row):
@@ -517,19 +521,13 @@ class ConwayGame:
 
     def place_mwss(self, offset_x=0, offset_y=0):
         """
-        Place a 6×4 Middleweight Spaceship at (offset_x, offset_y).
-        Decoded from RLE: b2o3b$obo2b$obobo$4o!
-        Pattern:
-        ..O...
-        O.O...
-        O.O.O.
-        OOOO..
+        Place a 6×4 Middleweight Spaceship (MWSS) moving east at speed c/2.
         """
         pattern = [
-            "..O...",
-            "O.O...",
-            "O.O.O.",
-            "OOOO..",
+            "..OOO.",  # row 0
+            ".OOOOO",  # row 1
+            "OO.OOO",  # row 2
+            ".OO...",  # row 3
         ]
         for i, row in enumerate(pattern):
             for j, ch in enumerate(row):
@@ -537,19 +535,14 @@ class ConwayGame:
 
     def place_hwss(self, offset_x=0, offset_y=0):
         """
-        Place a 7×4 Heavyweight Spaceship at (offset_x, offset_y).
-        Decoded from RLE: 3o2bo$bo3b2o$obo3bo$o4bo!
-        Pattern:
-        OOO..O
-        .O...OO
-        O.O...O
-        O....O.
+        Place a 7×4 Heavyweight Spaceship (HWSS) moving east at speed c/2.
         """
         pattern = [
-            "OOO..O",
-            ".O...OO",
-            "O.O...O",
-            "O....O.",
+            "...OO..",  # row 0
+            ".O....O",  # row 1
+            "O......",  # row 2
+            "O.....O",  # row 3
+            "OOOOOO.",  # row 4
         ]
         for i, row in enumerate(pattern):
             for j, ch in enumerate(row):
