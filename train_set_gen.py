@@ -134,4 +134,4 @@ if __name__ == "__main__":
 
     # generate_sets(A=args.num_sim, N=args.img_size, I=args.num_steps, Toroidal=True, save_folder='data')
     # generate_test_sets()
-    generate_spaceships(N=32, I=args.num_steps, Toroidal=True, save_folder='patterns')
+    generate_spaceships(N=args.img_size, I=args.num_steps, Toroidal=True, save_folder='patterns')

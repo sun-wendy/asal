@@ -189,10 +189,11 @@ def evaluate(model, state, val_dataset: np.ndarray, img_size: int, grid_size: Tu
         if t_skip > 0:
             val_sequence = val_sequence[::(t_skip + 1)]
         num_eff_frames, _, _ = val_sequence.shape
+        val_sequence = val_sequence[:10]
         prompt = val_sequence[0:1]
         pred_seq = [prompt[0]]
         num_pred = 1
-        while num_pred < num_eff_frames:
+        while num_pred < 10:  # num_eff_frames:
             inp = np.stack(pred_seq, axis=0)  # Autoregressive generation
             inp = inp.reshape(1, -1, model.config.token_dim)
             logits, _ = model.apply({'params': state.params}, inp, train=False)
@@ -217,10 +218,11 @@ def evaluate(model, state, val_dataset: np.ndarray, img_size: int, grid_size: Tu
     if t_skip > 0:
         vis_sequence = vis_sequence[::(t_skip + 1)]
     num_eff_frames, _, _ = vis_sequence.shape
+    vis_sequence = vis_sequence[:10]
     prompt = vis_sequence[0:1]
     pred_seq = [prompt[0]]
     num_pred = 1
-    while num_pred < num_eff_frames:
+    while num_pred < 10:
         inp = np.stack(pred_seq, axis=0)
         inp = inp.reshape(1, -1, model.config.token_dim)
         logits, _ = model.apply({'params': state.params}, inp, train=False)
@@ -238,7 +240,7 @@ def evaluate(model, state, val_dataset: np.ndarray, img_size: int, grid_size: Tu
     os.makedirs(gen_folder, exist_ok=True)
     os.makedirs(side_folder, exist_ok=True)
     
-    for i in range(num_eff_frames):
+    for i in range(10):
         gt_frame = np.repeat(tokens_to_frame(vis_sequence[i], img_size=img_size, grid_size=grid_size), 3, axis=-1)
         gen_frame = np.repeat(tokens_to_frame(generated_vis[i], img_size=img_size, grid_size=grid_size), 3, axis=-1)
         imageio.imwrite(os.path.join(gt_folder, f"frame_{i:04d}.png"), (gt_frame * 255).astype(np.uint8))
@@ -308,9 +310,9 @@ def train_gpt(batch_size: int = 32, train_steps: int = 3000, eval_every: int = 2
     token_dim = (img_size // patches_per_dim) ** 2
     num_tokens = patches_per_dim ** 2
     num_eff_frames = math.ceil(num_frames / (t_skip + 1))
-    block_size = (num_eff_frames - 1) * num_tokens
+    block_size = num_eff_frames * num_tokens
     
-    print(f"Training with batch size {batch_size}, train steps {train_steps}, eval every {eval_every}, img size {img_size}, patches per dim {patches_per_dim}, num frames {num_frames} (num effective frames {num_eff_frames}), t_skip {t_skip}")
+    print(f"Training with batch size {batch_size}, train steps {train_steps}, eval every {eval_every}, img size {img_size}, patches per dim {patches_per_dim}, num frames {num_frames} (num effective frames {num_eff_frames}), t_skip {t_skip}, block size {block_size}, token dim {token_dim}, num tokens {num_tokens}")
     
     gpt_config = GPTConfig(
         img_size=img_size,
