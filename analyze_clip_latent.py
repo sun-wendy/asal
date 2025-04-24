@@ -4,7 +4,7 @@ Vector-ised CLIP latent extraction + 2-D projection plot
 -------------------------------------------------------
 
 * Uses **JAX vmap** to batch tokens→images→CLIP embeddings (no Python loops).
-* Limits to the first `--max_frames` (default 40) of every sequence.
+* Limits to the first `--max_frames` (default 120) of every sequence.
 * Randomly subsamples **≤ 500 validation sequences** for speed / clarity.
 """
 
@@ -35,7 +35,7 @@ def _embed_imgs(self, imgs_bhwc):
 # -----------------------------------------------------------------------------#
 #  Vectorised latent extraction                                                #
 # -----------------------------------------------------------------------------#
-def extract_clip_latents_vmap(clip, dataset, img_size, grid, max_frames=40, batch_size=256):
+def extract_clip_latents_vmap(clip, dataset, img_size, grid, max_frames=120, batch_size=256):
     """
     dataset : (N_seq, num_frames, H, W) integer tokens
     Returns  : latents (N_seq*max_frames,D), labels, frames
@@ -69,7 +69,7 @@ def main():
     ap.add_argument("--img_size", type=int, default=32)
     ap.add_argument("--patches_per_dim", type=int, default=2)
     ap.add_argument("--num_frames", type=int, default=10)
-    ap.add_argument("--max_frames", type=int, default=40)
+    ap.add_argument("--max_frames", type=int, default=120)
     ap.add_argument("--val_csv", required=True)
     ap.add_argument("--test_csv")
     ap.add_argument("--analysis_method", choices=["umap", "tsne", "pca"], default="umap")
@@ -86,7 +86,9 @@ def main():
     val_tok = load_dataset_from_csv(args.val_csv, args.img_size, args.num_frames, grid)
     print("HERE1")
     if val_tok.shape[0] > 500:                     # ≤ 500 validation sequences
-        val_tok = val_tok[np.random.choice(val_tok.shape[0], 500, replace=False)]
+        rng_fix = np.random.default_rng(0)           # fixed seed
+        sel     = rng_fix.choice(val_tok.shape[0], 500, replace=False)
+        val_tok  = val_tok[sel]
     val_lat, val_lbl, _ = extract_clip_latents_vmap(
         clip, val_tok, args.img_size, grid, max_frames=args.max_frames)
     max_val_id = max((s for s, _ in val_lbl), default=-1)

@@ -167,7 +167,7 @@ def extract_dataset_context(model, params, dataset: np.ndarray,
     all_lat = []
     labels: List[Tuple[int,int]] = []
     for seq_idx in range(dataset.shape[0]):
-        seq = dataset[seq_idx, :40]
+        seq = dataset[seq_idx, :-1]
         seq_flat = seq.reshape(-1, seq.shape[-1])
         lat = extract_latent_with_context(model, params, seq_flat,
                                          num_tokens, layer, apply_ln)
@@ -221,7 +221,9 @@ if __name__ == '__main__':
     val_ds = load_dataset_from_csv(args.val_csv, args.img_size,
                                    args.num_frames, grid)
     if val_ds.shape[0] > 500:
-        val_ds = val_ds[np.random.choice(val_ds.shape[0], 500, False)]
+        rng_fix = np.random.default_rng(0)           # fixed seed
+        sel     = rng_fix.choice(val_ds.shape[0], 500, replace=False)
+        val_ds  = val_ds[sel]
 
     val_lat, val_lbl = extract_dataset_context(model, params, val_ds,
                                                num_tokens,
