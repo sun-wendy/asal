@@ -4,7 +4,7 @@ import math
 import os
 import pickle
 from dataclasses import dataclass
-from typing import Optional, List, Tuple
+from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -112,18 +112,20 @@ class GPT(nn.Module):
             x = self.ln_f(x)
         return jnp.mean(x, axis=1)
 
-# compute normalized spatio-temporal entropy of a single sequence
-def compute_st_entropy_arr(arr: jnp.ndarray, patches_per_dim: int) -> float:
+# compute per-patch temporal entropy (to detect oscillators)
+def compute_patch_temporal_entropy(arr: np.ndarray, patches_per_dim: int) -> np.ndarray:
     L, H, W = arr.shape
     k = H // patches_per_dim
-    blocks = arr.reshape(L, patches_per_dim, k, patches_per_dim, k)
-    blocks = blocks.transpose(1,3,0,2,4).reshape(-1, L*k*k)
-    blocks_np = np.array(blocks)
-    uniq, counts = np.unique(blocks_np, axis=0, return_counts=True)
-    probs = counts / counts.sum()
-    Hval = -np.sum(probs * np.log2(probs))
-    # normalize by block-volume
-    return Hval / (k*k*L)
+    entropies = []
+    for pi in range(patches_per_dim):
+        for pj in range(patches_per_dim):
+            patch_seq = arr[:, pi*k:(pi+1)*k, pj*k:(pj+1)*k]
+            patterns = patch_seq.reshape(L, k*k)
+            uniq, counts = np.unique(patterns, axis=0, return_counts=True)
+            probs = counts / counts.sum()
+            H = -np.sum(probs * np.log2(probs + 1e-12))
+            entropies.append(H / (k * k))
+    return np.array(entropies)
 
 # cache latents & entropies
 def prepare_and_cache(
@@ -139,17 +141,21 @@ def prepare_and_cache(
    if os.path.exists(cache_path):
        data = np.load(cache_path)
        return data['X'], data['y']
+
    rows = list(csv.reader(open(csv_path)))[1:]
    n = len(rows)
-   # build array of shape (n, L, H, W)
    seqs = np.array([list("".join(row[:-1])) for row in rows], int)
    seqs = seqs.reshape(n, -1, img_size, img_size)
    seqs = seqs[:, :20]
-   # compute entropies
+
+   # compute per-patch-min entropy for each sequence
    ents = []
    for s in seqs:
-       ents.append(compute_st_entropy_arr(jnp.array(s), patches_per_dim))
+       arr = np.array(s, dtype=int)
+       patch_ents = compute_patch_temporal_entropy(arr, patches_per_dim)
+       ents.append(np.min(patch_ents))
    y = np.array(ents, dtype=np.float32)
+
    # extract latents from initial frame only
    inits = seqs[:,0,...,None]
    grid = (patches_per_dim, patches_per_dim)
@@ -157,6 +163,7 @@ def prepare_and_cache(
        tokens = frame_to_tokens(np.array(frame), grid)
        return model.apply({'params':params}, jnp.array(tokens[None]),
                           method=GPT.get_latent, layer=layer_to_extract, apply_ln=apply_ln)[0]
+
    X = np.array(jax.vmap(latent_fn)(jnp.array(inits)))
    np.savez_compressed(cache_path, X=X, y=y)
    return X, y
@@ -193,22 +200,23 @@ if __name__ == '__main__':
     model = GPT(config)
     params = pickle.load(open(args.checkpoint,'rb'))
 
-    X_train, y_train = prepare_and_cache(args.train_csv, f"{args.cache_dir}/train.npz",
-                                         model, params, args.img_size, args.patches_per_dim,
-                                         args.layer_to_extract, args.apply_ln)
-    X_val,   y_val   = prepare_and_cache(args.val_csv,   f"{args.cache_dir}/val.npz",
-                                         model, params, args.img_size, args.patches_per_dim,
-                                         args.layer_to_extract, args.apply_ln)
+    X_train, y_train = prepare_and_cache(
+        args.train_csv, f"{args.cache_dir}/train.npz",
+        model, params, args.img_size, args.patches_per_dim,
+        args.layer_to_extract, args.apply_ln)
+    X_val,   y_val   = prepare_and_cache(
+        args.val_csv,   f"{args.cache_dir}/val.npz",
+        model, params, args.img_size, args.patches_per_dim,
+        args.layer_to_extract, args.apply_ln)
 
     mean = y_train.mean()
     std  = y_train.std() if y_train.std()>0 else 1.0
-    print(f"Entropy μ={mean:.4f}, σ={std:.4f}")
+    print(f"Patch-entropy μ={mean:.4f}, σ={std:.4f}")
 
     mlp = MLPRegressor(
         hidden_layer_sizes=tuple(args.hidden_layers),
         activation='relu', solver='adam',
-        alpha=1e-3,                # L2 regularization
-        warm_start=True, max_iter=1,
+        alpha=1e-3, warm_start=True, max_iter=1,
         learning_rate_init=args.learning_rate_init,
         learning_rate='constant'
     )
@@ -219,22 +227,20 @@ if __name__ == '__main__':
     for step in range(1, args.total_steps+1):
         idxs = rng.choice(n_train, args.batch_size, replace=False)
         Xb, yb = X_train[idxs], y_train[idxs]
-        # raw entropy distribution
-        # print(f"[Step {step}] train H: min={yb.min():.4f}, max={yb.max():.4f}, mean={yb.mean():.4f}, std={yb.std():.4f}")
         yb_std = (yb - mean) / std
-        # standardized distribution
-        # print(f"[Step {step}] train std H: min={yb_std.min():.2f}, max={yb_std.max():.2f}, mean={yb_std.mean():.2f}, std={yb_std.std():.2f}")
         mlp.fit(Xb, yb_std)
-        yb_pred_std = mlp.predict(Xb)
-        mse_s = mean_squared_error(yb_std, yb_pred_std)
-        r2_s  = r2_score(yb_std, yb_pred_std)
-        # print(f"[Step {step}] train std MSE={mse_s:.3f}, R2={r2_s:.3f}")
+        # Print training stats
+        if step % args.eval_every == 0 or step == args.total_steps:
+            print(f"[Step {step}] train std MSE={mean_squared_error(yb_std, mlp.predict(Xb)):.3f},"
+                  f" R2={r2_score(yb_std, mlp.predict(Xb)):.3f}")
+
         if step % args.eval_every == 0 or step == args.total_steps:
             vidx = rng.choice(n_val, args.val_batch_size, replace=False)
             Xv, yv = X_val[vidx], y_val[vidx]
             yv_std = (yv - mean) / std
             yv_pred_std = mlp.predict(Xv)
-            print(f"[Step {step}] val std MSE={mean_squared_error(yv_std,yv_pred_std):.3f}, R2={r2_score(yv_std,yv_pred_std):.3f}")
+            print(f"[Step {step}] val std MSE={mean_squared_error(yv_std,yv_pred_std):.3f},"
+                  f" R2={r2_score(yv_std,yv_pred_std):.3f}")
 
     if args.output_model:
         dump(mlp, args.output_model)

@@ -112,20 +112,7 @@ class GPT(nn.Module):
             x = self.ln_f(x)
         return jnp.mean(x, axis=1)
 
-# compute normalized spatio-temporal entropy of a single sequence
-def compute_st_entropy_arr(arr: jnp.ndarray, patches_per_dim: int) -> float:
-    L, H, W = arr.shape
-    k = H // patches_per_dim
-    blocks = arr.reshape(L, patches_per_dim, k, patches_per_dim, k)
-    blocks = blocks.transpose(1,3,0,2,4).reshape(-1, L*k*k)
-    blocks_np = np.array(blocks)
-    uniq, counts = np.unique(blocks_np, axis=0, return_counts=True)
-    probs = counts / counts.sum()
-    Hval = -np.sum(probs * np.log2(probs))
-    # normalize by block-volume
-    return Hval / (k*k*L)
-
-# cache latents & entropies
+# prepare and cache dataset once using JAX vmap for latent extraction
 def prepare_and_cache(
    csv_path: str,
    cache_path: str,
@@ -139,50 +126,52 @@ def prepare_and_cache(
    if os.path.exists(cache_path):
        data = np.load(cache_path)
        return data['X'], data['y']
-   rows = list(csv.reader(open(csv_path)))[1:]
-   n = len(rows)
-   # build array of shape (n, L, H, W)
-   seqs = np.array([list("".join(row[:-1])) for row in rows], int)
-   seqs = seqs.reshape(n, -1, img_size, img_size)
-   seqs = seqs[:, :20]
-   # compute entropies
-   ents = []
-   for s in seqs:
-       ents.append(compute_st_entropy_arr(jnp.array(s), patches_per_dim))
-   y = np.array(ents, dtype=np.float32)
-   # extract latents from initial frame only
-   inits = seqs[:,0,...,None]
+   # load all initial frames and final counts into numpy arrays
+   rows = list(csv.reader(open(csv_path)))
+   header, data_rows = rows[0], rows[1:]
+   n = len(data_rows)
+   # build arrays of shape (n, H, W, 1)
+   init_bits = np.array([list(r[0].strip()) for r in data_rows], dtype=int)
+   frames = init_bits.reshape(n, img_size, img_size)[..., None]
+   finals = np.array([list(r[-2].strip()) for r in data_rows], int).reshape(n, -1)
+   counts = finals.sum(axis=1).astype(np.float32)
+   # vectorized latent extraction: vmap over first axis
    grid = (patches_per_dim, patches_per_dim)
    def latent_fn(frame):
-       tokens = frame_to_tokens(np.array(frame), grid)
+       tokens = frame_to_tokens(frame, grid)
        return model.apply({'params':params}, jnp.array(tokens[None]),
                           method=GPT.get_latent, layer=layer_to_extract, apply_ln=apply_ln)[0]
-   X = np.array(jax.vmap(latent_fn)(jnp.array(inits)))
+   # vmap to get (n, latent_dim)
+   latents = jax.vmap(latent_fn)(jnp.array(frames))
+#    sigma = 0.1   # try e.g. 0.01–0.1
+#    latents = latents + np.random.randn(*latents.shape) * sigma
+   X = np.array(latents)
+   y = counts
    np.savez_compressed(cache_path, X=X, y=y)
    return X, y
 
 if __name__ == '__main__':
-    p = argparse.ArgumentParser()
-    p.add_argument('--train_csv', required=True)
-    p.add_argument('--val_csv',   required=True)
-    p.add_argument('--checkpoint',required=True)
-    p.add_argument('--img_size', type=int, default=32)
-    p.add_argument('--patches_per_dim', type=int, default=2)
-    p.add_argument('--num_frames', type=int, default=10)
-    p.add_argument('--t_skip', type=int, default=0)
-    p.add_argument('--layer_to_extract', type=int, default=None)
-    p.add_argument('--apply_ln', action='store_true')
-    p.add_argument('--no_apply_ln', dest='apply_ln', action='store_false')
-    p.set_defaults(apply_ln=True)
-    p.add_argument('--hidden_layers', nargs='+', type=int, default=[128,64])
-    p.add_argument('--batch_size', type=int, default=64)
-    p.add_argument('--val_batch_size', type=int, default=64)
-    p.add_argument('--total_steps', type=int, default=3000)
-    p.add_argument('--eval_every', type=int, default=50)
-    p.add_argument('--learning_rate_init', type=float, default=1e-3)
-    p.add_argument('--output_model', type=str, default=None)
-    p.add_argument('--cache_dir', type=str, default='cache')
-    args = p.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--train_csv', required=True)
+    parser.add_argument('--val_csv', required=True)
+    parser.add_argument('--checkpoint', required=True)
+    parser.add_argument('--img_size', type=int, default=32)
+    parser.add_argument('--patches_per_dim', type=int, default=2)
+    parser.add_argument('--num_frames', type=int, default=10)
+    parser.add_argument('--t_skip', type=int, default=0)
+    parser.add_argument('--layer_to_extract', type=int, default=None)
+    parser.add_argument('--apply_ln', action='store_true')
+    parser.add_argument('--no_apply_ln', dest='apply_ln', action='store_false')
+    parser.set_defaults(apply_ln=True)
+    parser.add_argument('--hidden_layers', nargs='+', type=int, default=[32,16])
+    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--val_batch_size', type=int, default=64)
+    parser.add_argument('--total_steps', type=int, default=500)
+    parser.add_argument('--eval_every', type=int, default=50)
+    parser.add_argument('--learning_rate_init', type=float, default=3e-4)
+    parser.add_argument('--output_model', type=str, default=None)
+    parser.add_argument('--cache_dir', type=str, default='cache')
+    args = parser.parse_args()
 
     os.makedirs(args.cache_dir, exist_ok=True)
 
@@ -193,48 +182,73 @@ if __name__ == '__main__':
     model = GPT(config)
     params = pickle.load(open(args.checkpoint,'rb'))
 
-    X_train, y_train = prepare_and_cache(args.train_csv, f"{args.cache_dir}/train.npz",
-                                         model, params, args.img_size, args.patches_per_dim,
+    train_cache = f"{args.cache_dir}/train.npz"
+    val_cache   = f"{args.cache_dir}/val.npz"
+    X_train, y_train = prepare_and_cache(args.train_csv, train_cache,
+                                         model, params,
+                                         args.img_size, args.patches_per_dim,
                                          args.layer_to_extract, args.apply_ln)
-    X_val,   y_val   = prepare_and_cache(args.val_csv,   f"{args.cache_dir}/val.npz",
-                                         model, params, args.img_size, args.patches_per_dim,
+    X_val, y_val     = prepare_and_cache(args.val_csv, val_cache,
+                                         model, params,
+                                         args.img_size, args.patches_per_dim,
                                          args.layer_to_extract, args.apply_ln)
 
     mean = y_train.mean()
     std  = y_train.std() if y_train.std()>0 else 1.0
-    print(f"Entropy μ={mean:.4f}, σ={std:.4f}")
+    print(f"Target μ={mean:.2f}, σ={std:.2f}")
 
     mlp = MLPRegressor(
-        hidden_layer_sizes=tuple(args.hidden_layers),
-        activation='relu', solver='adam',
-        alpha=1e-3,                # L2 regularization
-        warm_start=True, max_iter=1,
-        learning_rate_init=args.learning_rate_init,
-        learning_rate='constant'
+        hidden_layer_sizes=tuple(args.hidden_layers), activation='relu', solver='adam',
+        warm_start=True, max_iter=1, learning_rate_init=args.learning_rate_init, learning_rate='constant',
+        alpha=1e-2
     )
-
     rng = np.random.default_rng(0)
     n_train, n_val = X_train.shape[0], X_val.shape[0]
+    train_loss = []
+    val_loss = []
+    val_steps = []
 
     for step in range(1, args.total_steps+1):
         idxs = rng.choice(n_train, args.batch_size, replace=False)
         Xb, yb = X_train[idxs], y_train[idxs]
-        # raw entropy distribution
-        # print(f"[Step {step}] train H: min={yb.min():.4f}, max={yb.max():.4f}, mean={yb.mean():.4f}, std={yb.std():.4f}")
-        yb_std = (yb - mean) / std
-        # standardized distribution
-        # print(f"[Step {step}] train std H: min={yb_std.min():.2f}, max={yb_std.max():.2f}, mean={yb_std.mean():.2f}, std={yb_std.std():.2f}")
+        # ground-truth distribution of counts
+        # print(f"[Step {step}] train gt count: min={yb.min():.0f}, max={yb.max():.0f}, mean={yb.mean():.2f}, std={yb.std():.2f}")
+        yb_std = (yb-mean)/std
+        # print(f"[Step {step}] train std count: min={yb_std.min():.2f}, max={yb_std.max():.2f}, mean={yb_std.mean():.2f}, std={yb_std.std():.2f}")
         mlp.fit(Xb, yb_std)
         yb_pred_std = mlp.predict(Xb)
+        #print(f"[Step {step}] train std pred: min={yb_pred_std.min():.2f}, max={yb_pred_std.max():.2f}, mean={yb_pred_std.mean():.2f}, std={yb_pred_std.std():.2f}")
         mse_s = mean_squared_error(yb_std, yb_pred_std)
         r2_s  = r2_score(yb_std, yb_pred_std)
-        # print(f"[Step {step}] train std MSE={mse_s:.3f}, R2={r2_s:.3f}")
-        if step % args.eval_every == 0 or step == args.total_steps:
+        train_loss.append(mse_s)
+        if step%args.eval_every==0 or step==args.total_steps:
+            print(f"[Step {step}] train std MSE={mse_s:.3f}, R2={r2_s:.3f}")
+        if step%args.eval_every==0 or step==args.total_steps:
+            val_steps.append(step)
             vidx = rng.choice(n_val, args.val_batch_size, replace=False)
             Xv, yv = X_val[vidx], y_val[vidx]
-            yv_std = (yv - mean) / std
+            yv_std = (yv-mean)/std
             yv_pred_std = mlp.predict(Xv)
+            mse_v = mean_squared_error(yv_std, yv_pred_std)
+            val_loss.append(mse_v)
             print(f"[Step {step}] val std MSE={mean_squared_error(yv_std,yv_pred_std):.3f}, R2={r2_score(yv_std,yv_pred_std):.3f}")
+
+        # plot raw and EMA-smoothed using pandas
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    df = pd.DataFrame({'train': pd.Series(train_loss, index=list(range(1, len(train_loss)+1)))})
+    df['val'] = pd.Series(val_loss, index=val_steps)
+    df_ewm = df.ewm(span=50, adjust=False).mean()
+    plt.figure()
+    plt.plot(df['train'], label='train std MSE', alpha=0.3)
+    plt.plot(df_ewm['train'], label='train std MSE (EWMA)')
+    plt.plot(df['val'], label='val std MSE', alpha=0.3)
+    plt.plot(df_ewm['val'], '--', label='val std MSE (EWMA)')
+    plt.xlabel('Iteration')
+    plt.ylabel('Std-space MSE')
+    plt.legend()
+    plt.title('Loss & EWMA (span=1000)')
+    plt.savefig('train_val_loss.png')
 
     if args.output_model:
         dump(mlp, args.output_model)
