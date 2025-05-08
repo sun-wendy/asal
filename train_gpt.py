@@ -175,41 +175,33 @@ def evaluate(model, state, val_dataset: np.ndarray, img_size: int, grid_size: Tu
     """
     Evaluate the GPT model on the validation dataset
     """
-    total_accuracy = 0.0
+    # Evaluation using teacher-forcing
     num_val = val_dataset.shape[0]
-    
-    rng_acc = np.random.default_rng() 
-
-    # Loop over a fixed number of random validation sequences for accuracy computation
-    num_eval_samples = 100
-    for i in range(num_eval_samples):
-        idx = rng_acc.integers(0, num_val)
-        print(f"[Eval] Processing validation sequence {idx} of {num_val}")
-        val_sequence = val_dataset[idx]  # shape: (num_frames, num_tokens, token_dim)
-        if t_skip > 0:
-            val_sequence = val_sequence[::(t_skip + 1)]
-        num_eff_frames, _, _ = val_sequence.shape
-        val_sequence = val_sequence[:10]
-        prompt = val_sequence[0:1]
-        pred_seq = [prompt[0]]
-        num_pred = 1
-        while num_pred < 10:  # num_eff_frames:
-            inp = np.stack(pred_seq, axis=0)  # Autoregressive generation
-            inp = inp.reshape(1, -1, model.config.token_dim)
-            logits, _ = model.apply({'params': state.params}, inp, train=False)
-            logits = logits.reshape(num_pred, -1, model.config.token_dim)
-            last_frame_logits = logits[-1]
-            next_frame_tokens = (last_frame_logits > 0).astype(np.float32)
-            pred_seq.append(np.array(next_frame_tokens))
-            num_pred += 1
-
-        generated_sequence = np.stack(pred_seq[1:], axis=0)
-        accuracy = np.mean(generated_sequence == val_sequence[1:]) * 100.0
-        total_accuracy += accuracy
-
-    avg_accuracy = total_accuracy / num_eval_samples
-    print(f"[Eval] Step {step} Overall Evaluation Accuracy: {avg_accuracy:.2f}%")
-    wandb.log({"eval_accuracy": avg_accuracy, "eval_step": step})
+    num_eval = 100
+    rng = np.random.default_rng()
+    # sample a batch of sequences
+    idxs = rng.choice(num_val, size=num_eval, replace=False)
+    batch = val_dataset[idxs]               # shape: (B, T, num_tokens, token_dim)
+    if t_skip > 0:
+        batch = batch[:, ::(t_skip+1), :, :]
+    batch = batch[:, :10]                   # only first 10 frames
+    # split into inputs (frames 0…T-2) and targets (1…T-1)
+    inputs = batch[:, :-1, :, :]            # shape: (B, T-1, N, D)
+    targets = batch[:, 1:, :, :]            # shape: (B, T-1, N, D)
+    B, t_minus1, N, D = inputs.shape
+    # flatten time+tokens into sequence dimension
+    inputs = inputs.reshape(B, -1, D)       # (B, seq_len, D)
+    targets = targets.reshape(B, -1, D)     # (B, seq_len, D)
+    # single forward pass
+    logits, _ = model.apply(
+        {'params': state.params},
+        inputs,
+        train=False
+    )                                        # (B, seq_len, D)
+    preds = (logits > 0).astype(np.float32)
+    accuracy = (preds == targets).mean() * 100.0
+    print(f"[Eval] Step {step} Teacher‑forcing Accuracy: {accuracy:.2f}%")
+    wandb.log({"eval_accuracy": float(accuracy), "eval_step": step})
 
     # Visualization
     vis_rng = np.random.default_rng()
@@ -339,7 +331,7 @@ def train_gpt(batch_size: int = 32, train_steps: int = 3000, eval_every: int = 2
     def train_step(state, tokens_batch, dropout_rng):
         def loss_fn(params):
             B, num_eff_frames, num_tokens, token_dim = tokens_batch.shape
-            inputs = tokens_batch[:, :num_eff_frames - 1, :, :]
+            inputs = tokens_batch[:, :-1, :, :]
             targets = tokens_batch[:, 1:, :, :]
             inputs = inputs.reshape(B, -1, token_dim)
             targets = targets.reshape(B, -1, token_dim)
