@@ -2,7 +2,12 @@ import numpy as np
 import random
 import os
 import matplotlib.pyplot as plt
+from scipy.signal import convolve2d
 from matplotlib.animation import FuncAnimation
+
+_NEIGHBOR_KERNEL = np.array([[1,1,1],
+                             [1,0,1],
+                             [1,1,1]], dtype=int)
 
 
 class ConwayGame:
@@ -19,20 +24,34 @@ class ConwayGame:
         """Randomize the grid with a uniform probability of ones."""
         self.grid = np.random.rand(self.GRID_WIDTH, self.GRID_HEIGHT) < probability_of_one
 
+    # def update_grid(self):
+    #     """Update the grid based on Conway's Game of Life rules."""
+    #     new_grid = np.zeros((self.GRID_WIDTH, self.GRID_HEIGHT), dtype=bool)
+    #     for i in range(self.GRID_WIDTH):
+    #         for j in range(self.GRID_HEIGHT):
+    #             neighbors = sum(
+    #                 self.grid[(i + x) % self.GRID_WIDTH, (j + y) % self.GRID_HEIGHT]
+    #                 for x in [-1, 0, 1] for y in [-1, 0, 1]
+    #             ) - self.grid[i, j]
+    #             if self.grid[i, j]:
+    #                 new_grid[i, j] = neighbors in [2, 3]
+    #             else:
+    #                 new_grid[i, j] = neighbors == 3
+    #     self.grid = new_grid
+    
     def update_grid(self):
-        """Update the grid based on Conway's Game of Life rules."""
-        new_grid = np.zeros((self.GRID_WIDTH, self.GRID_HEIGHT), dtype=bool)
-        for i in range(self.GRID_WIDTH):
-            for j in range(self.GRID_HEIGHT):
-                neighbors = sum(
-                    self.grid[(i + x) % self.GRID_WIDTH, (j + y) % self.GRID_HEIGHT]
-                    for x in [-1, 0, 1] for y in [-1, 0, 1]
-                ) - self.grid[i, j]
-                if self.grid[i, j]:
-                    new_grid[i, j] = neighbors in [2, 3]
-                else:
-                    new_grid[i, j] = neighbors == 3
-        self.grid = new_grid
+        """Fast toroidal Game‑of‑Life step via 2D convolution."""
+        # count neighbors by convolving with the 3×3 kernel, wrapping at edges
+        counts = convolve2d(self.grid.astype(int),
+                            _NEIGHBOR_KERNEL,
+                            mode='same',
+                            boundary='wrap')
+        # apply the Life rules in one vectorized expression
+        self.grid = (
+            ( self.grid  & ((counts == 2) | (counts == 3)))
+            |
+            (~self.grid & (counts == 3))
+        )
 
     def compute_number_of_ones_per_region(self, region_size=3):
         """
