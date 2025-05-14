@@ -10,7 +10,7 @@ import torchvision.utils as vutils
 
 # ─── Dataset ────────────────────────────────────────────────────────────────────
 class FramePairsDataset(Dataset):
-    def __init__(self, csv_file, img_size, num_frames):
+    def __init__(self, csv_file, img_size, num_frames, t_skip=0):
         self.pairs = []
         with open(csv_file) as f:
             reader = csv.reader(f)
@@ -21,8 +21,8 @@ class FramePairsDataset(Dataset):
                     arr = (np.frombuffer(cell.strip().encode("ascii"), np.uint8) - 48
                            ).astype(np.float32)
                     frames.append(arr.reshape(img_size, img_size))
-                for i in range(len(frames)-1):
-                    self.pairs.append((frames[i], frames[i+1]))
+                for i in range(len(frames)-t_skip-1):
+                    self.pairs.append((frames[i], frames[i+t_skip+1]))
     def __len__(self): return len(self.pairs)
     def __getitem__(self, idx):
         x0, x1 = self.pairs[idx]
@@ -136,14 +136,15 @@ def main():
     p.add_argument("--log_every", type=int,default=100)
     p.add_argument("--img_size",  type=int,default=16)
     p.add_argument("--num_frames",type=int,default=20)
+    p.add_argument("--t_skip",   type=int,default=0)
     args=p.parse_args()
 
     device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
     wandb.init(project="gol_discrete",config=vars(args))
 
     # data
-    train_ds=FramePairsDataset(args.train_csv,args.img_size,args.num_frames)
-    val_ds  =FramePairsDataset(args.val_csv,  args.img_size,args.num_frames)
+    train_ds=FramePairsDataset(args.train_csv,args.img_size,args.num_frames, args.t_skip)
+    val_ds  =FramePairsDataset(args.val_csv,  args.img_size,args.num_frames, args.t_skip)
     train_loader=DataLoader(train_ds,batch_size=args.batch_size,shuffle=True,drop_last=True)
     val_loader  =DataLoader(val_ds,  batch_size=args.batch_size,shuffle=True,drop_last=False)
 

@@ -182,24 +182,32 @@ def main():
                 print(f"[{step:5d}] train={loss.item():.6f} val={vl:.6f}")
                 wandb.log({"train/loss":loss.item(),"val/loss":vl},step=step)
 
-                # visualize 10 GT vs pred
-                count=0
+                # visualize 10 samples: [x0 | noised xt | ground-truth x1 | reconstructed x1]
+                count = 0
                 with torch.no_grad():
-                    for vx0,vx1 in val_loader:
-                        clean = vx1.to(device)
-                        vt = torch.randint(0,1000,(clean.size(0),),device=device)
-                        vxt, vn = q_sample(clean, vt, alphas)
-                        inp_v = torch.cat([vxt, vx0.to(device)], dim=1)
-                        out   = model(inp_v, vt)
-                        for i in range(clean.shape[0]):
-                            if count>=10: break
-                            gt = clean[i]
-                            pd = out[i]  # already in [0,1]
-                            binary_pd = (pd > 0.5).float()
-                            pair = torch.cat([gt, binary_pd], dim=2)
-                            vutils.save_image(pair, f"viz/{count:02d}.png", normalize=False)
-                            count+=1
-                        if count>=10: break
+                    for vx0, vx1 in val_loader:
+                        vx0 = vx0.to(device)                # [B,1,H,W]
+                        clean = vx1.to(device)              # [B,1,H,W]
+                        vt = torch.randint(0, 1000, (clean.size(0),), device=device)
+                        xt, noise = q_sample(clean, vt, alphas)  # [B,1,H,W]
+                        inp_v = torch.cat([xt, vx0], dim=1)      # [B,2,H,W]
+                        pred = model(inp_v, vt)                  # [B,1,H,W]
+
+                        for i in range(clean.size(0)):
+                            if count >= 10:
+                                break
+
+                            img_x0  = vx0[i]
+                            img_xt  = xt[i]
+                            img_x1  = clean[i]
+                            img_rec = pred[i]
+
+                            grid = torch.stack([img_x0, img_xt, img_x1, img_rec], dim=0)
+                            grid = vutils.make_grid(grid, nrow=4, normalize=False)
+                            vutils.save_image(grid.cpu(), f"viz/{count:02d}.png", normalize=False)
+                            count += 1
+                        if count >= 10:
+                            break
                 model.train()
             if step>=args.steps: break
 

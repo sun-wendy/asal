@@ -132,6 +132,6 @@ if __name__ == "__main__":
     parser.add_argument('--num_steps', type=int, default=10, help='Number of simulation steps to run')
     args = parser.parse_args()
 
-    # generate_sets(A=args.num_sim, N=args.img_size, I=args.num_steps, Toroidal=True, save_folder='data')
+    generate_sets(A=args.num_sim, N=args.img_size, I=args.num_steps, Toroidal=True, save_folder='data')
     # generate_test_sets()
-    generate_spaceships(N=args.img_size, I=args.num_steps, Toroidal=True, save_folder='patterns')
+    # generate_spaceships(N=args.img_size, I=args.num_steps, Toroidal=True, save_folder='patterns')

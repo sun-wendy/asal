@@ -1,6 +1,5 @@
 import jax
 import jax.numpy as jnp
-import torch
 import numpy as np
 from typing import Tuple
 from einops import rearrange

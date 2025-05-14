@@ -19,6 +19,8 @@ from flax.training import train_state
 from flax.traverse_util import path_aware_map
 from flax.core import freeze
 from flax.core.frozen_dict import freeze
+import random
+from sklearn.metrics import precision_score, recall_score, roc_auc_score
 
 from util_gol import frame_to_tokens, tokens_to_frame, load_dataset_from_csv
 
@@ -61,7 +63,7 @@ class CausalSelfAttention(nn.Module):
         mask = (frame_idx[None, :] <= frame_idx[:, None]).astype(jnp.float32)
         mask = mask.reshape(1, 1, T, T)
         att = (q @ k.swapaxes(-2, -1)) * (1.0 / jnp.sqrt(self.head_size))
-        att = jnp.where(mask == 1.0, att, float('-inf'))
+        att = jnp.where(mask == 1.0, att, -1e9)
         att = nn.softmax(att, axis=-1)
         att = self.attn_dropout(att, deterministic=not train)
         y = att @ v
@@ -184,7 +186,6 @@ def evaluate(model, state, val_dataset: np.ndarray, img_size: int, grid_size: Tu
     batch = val_dataset[idxs]               # shape: (B, T, num_tokens, token_dim)
     if t_skip > 0:
         batch = batch[:, ::(t_skip+1), :, :]
-    batch = batch[:, :10]                   # only first 10 frames
     # split into inputs (frames 0…T-2) and targets (1…T-1)
     inputs = batch[:, :-1, :, :]            # shape: (B, T-1, N, D)
     targets = batch[:, 1:, :, :]            # shape: (B, T-1, N, D)
@@ -199,9 +200,36 @@ def evaluate(model, state, val_dataset: np.ndarray, img_size: int, grid_size: Tu
         train=False
     )                                        # (B, seq_len, D)
     preds = (logits > 0).astype(np.float32)
-    accuracy = (preds == targets).mean() * 100.0
-    print(f"[Eval] Step {step} Teacher‑forcing Accuracy: {accuracy:.2f}%")
-    wandb.log({"eval_accuracy": float(accuracy), "eval_step": step})
+
+    probs = jax.nn.sigmoid(logits)
+    y_true = targets.reshape(-1)
+    y_prob = probs.reshape(-1)
+    y_pred = preds.reshape(-1)
+    # Compute metrics
+    accuracy  = (y_pred == y_true).mean()
+    precision = precision_score(y_true, y_pred, zero_division=0)
+    recall    = recall_score(y_true, y_pred, zero_division=0)
+    # AUROC requires at least one positive and one negative in y_true
+    try:
+        auroc = roc_auc_score(y_true, y_prob)
+    except ValueError:
+        auroc = float('nan')
+    # balanced accuracy
+    tp = np.sum((y_pred == 1) & (y_true == 1))
+    tn = np.sum((y_pred == 0) & (y_true == 0))
+    fp = np.sum((y_pred == 1) & (y_true == 0))
+    fn = np.sum((y_pred == 0) & (y_true == 1))
+    bal_acc = 0.5 * (tp/(tp+fn+1e-8) + tn/(tn+fp+1e-8))
+    # accuracy = (preds == targets).mean() * 100.0
+    print(f"[Eval] Step {step} — Acc: {accuracy*100:.2f}%, Prec: {precision:.3f}, Rec: {recall:.3f}, AUROC: {auroc:.3f}")
+    wandb.log({
+        "eval_accuracy":    float(accuracy),
+        "eval_precision":   float(precision),
+        "eval_recall":      float(recall),
+        "eval_auroc":       float(auroc),
+        "eval_balanced_acc": float(bal_acc),
+        "eval_step":        step,
+    })
 
     # Visualization
     vis_rng = np.random.default_rng()
@@ -214,7 +242,7 @@ def evaluate(model, state, val_dataset: np.ndarray, img_size: int, grid_size: Tu
     prompt = vis_sequence[0:1]
     pred_seq = [prompt[0]]
     num_pred = 1
-    while num_pred < 10:
+    while num_pred < 2:
         inp = np.stack(pred_seq, axis=0)
         inp = inp.reshape(1, -1, model.config.token_dim)
         logits, _ = model.apply({'params': state.params}, inp, train=False)
@@ -232,7 +260,7 @@ def evaluate(model, state, val_dataset: np.ndarray, img_size: int, grid_size: Tu
     os.makedirs(gen_folder, exist_ok=True)
     os.makedirs(side_folder, exist_ok=True)
     
-    for i in range(10):
+    for i in range(2):
         gt_frame = np.repeat(tokens_to_frame(vis_sequence[i], img_size=img_size, grid_size=grid_size), 3, axis=-1)
         gen_frame = np.repeat(tokens_to_frame(generated_vis[i], img_size=img_size, grid_size=grid_size), 3, axis=-1)
         imageio.imwrite(os.path.join(gt_folder, f"frame_{i:04d}.png"), (gt_frame * 255).astype(np.uint8))
@@ -284,11 +312,16 @@ def evaluate(model, state, val_dataset: np.ndarray, img_size: int, grid_size: Tu
 def train_gpt(batch_size: int = 32, train_steps: int = 3000, eval_every: int = 200, img_size: int = 32, patches_per_dim: int = 2,
               num_frames: int = 10, t_skip: int = 0,
               train_csv: str = "conway_states_0_1_10000by32by32by10_toroidal_20240711_133408.csv",
-              val_csv: str = "conway_states_0_1_1000by32by32by10_toroidal_20240711_151806.csv",):
+              val_csv: str = "conway_states_0_1_1000by32by32by10_toroidal_20240711_151806.csv",
+              seed: int = 42):
     """
     Training routine using CSV file data.
     Assumes each simulation sequence in the CSV has num_frames frames of size (img_size x img_size).
     """
+    random.seed(seed)
+    np.random.seed(seed)
+    rng = jax.random.PRNGKey(seed)
+
     wandb.init(project="gol_world_model",
                name=f"gpt_bsz{batch_size}_trainsteps{train_steps}_img{img_size}_patches{patches_per_dim}_frames{num_frames}_tskip{t_skip}",
                config={"batch_size": batch_size,
@@ -336,14 +369,17 @@ def train_gpt(batch_size: int = 32, train_steps: int = 3000, eval_every: int = 2
             inputs = inputs.reshape(B, -1, token_dim)
             targets = targets.reshape(B, -1, token_dim)
             logits, _ = model.apply({'params': params}, inputs, train=True, rngs={'dropout': dropout_rng})
-            loss = optax.sigmoid_binary_cross_entropy(logits, targets).mean()
-            return loss
+            bce_per_elem = optax.sigmoid_binary_cross_entropy(logits, targets)
+            # weight = jnp.ones_like(targets)
+            # weight = weight.at[targets == 1].set(5.0)
+            weight = jnp.where(targets == 1.0, 5.0, 1.0)
+            return (weight * bce_per_elem).mean()
         loss, grads = jax.value_and_grad(loss_fn)(state.params)
         state = state.apply_gradients(grads=grads)
         return state, loss
     
     train_losses = []
-    rng = jax.random.PRNGKey(int(time.time()))
+    # rng = jax.random.PRNGKey(int(time.time()))
     for step in range(1, train_steps + 1):
         batch_indices = np.random.choice(num_train, batch_size, replace=False)
         tokens_batch = train_dataset[batch_indices]
@@ -368,8 +404,8 @@ def train_gpt(batch_size: int = 32, train_steps: int = 3000, eval_every: int = 2
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--train_steps", type=int, default=30000)
-    parser.add_argument("--eval_every", type=int, default=5000)
+    parser.add_argument("--train_steps", type=int, default=50000)
+    parser.add_argument("--eval_every", type=int, default=1000)
     parser.add_argument("--img_size", type=int, default=32,
                         help="Image size (pixels) for each frame")
     parser.add_argument("--patches_per_dim", type=int, default=2,
@@ -382,6 +418,8 @@ if __name__ == "__main__":
                         help="Path to training CSV file")
     parser.add_argument("--val_csv", type=str, default="conway_states_0_1_1000by32by32by10_toroidal_20240711_151806.csv",
                         help="Path to validation CSV file")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for reproducibility")
     args = parser.parse_args()
 
     train_gpt(batch_size=args.batch_size, 
@@ -392,4 +430,5 @@ if __name__ == "__main__":
               num_frames=args.num_frames, 
               t_skip=args.t_skip, 
               train_csv=args.train_csv, 
-              val_csv=args.val_csv)
+              val_csv=args.val_csv,
+              seed=args.seed)
