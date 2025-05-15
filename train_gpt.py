@@ -310,7 +310,7 @@ def evaluate(model, state, val_dataset: np.ndarray, img_size: int, grid_size: Tu
 
 
 def train_gpt(batch_size: int = 32, train_steps: int = 3000, eval_every: int = 200, img_size: int = 32, patches_per_dim: int = 2,
-              num_frames: int = 10, t_skip: int = 0,
+              num_frames: int = 10, t_skip: int = 0, loss_beta: float = 2.0,
               train_csv: str = "conway_states_0_1_10000by32by32by10_toroidal_20240711_133408.csv",
               val_csv: str = "conway_states_0_1_1000by32by32by10_toroidal_20240711_151806.csv",
               seed: int = 42):
@@ -323,13 +323,14 @@ def train_gpt(batch_size: int = 32, train_steps: int = 3000, eval_every: int = 2
     rng = jax.random.PRNGKey(seed)
 
     wandb.init(project="gol_world_model",
-               name=f"gpt_bsz{batch_size}_trainsteps{train_steps}_img{img_size}_patches{patches_per_dim}_frames{num_frames}_tskip{t_skip}",
+               name=f"gpt_bsz{batch_size}_trainsteps{train_steps}_img{img_size}_patches{patches_per_dim}_frames{num_frames}_tskip{t_skip}_beta{loss_beta}",
                config={"batch_size": batch_size,
                        "train_steps": train_steps,
                        "img_size": img_size,
                        "patches_per_dim": patches_per_dim,
                        "num_frames": num_frames,
-                       "t_skip": t_skip})
+                       "t_skip": t_skip,
+                       "loss_beta": loss_beta})
     
     grid_size = (patches_per_dim, patches_per_dim)
     token_dim = (img_size // patches_per_dim) ** 2
@@ -337,7 +338,7 @@ def train_gpt(batch_size: int = 32, train_steps: int = 3000, eval_every: int = 2
     num_eff_frames = math.ceil(num_frames / (t_skip + 1))
     block_size = num_eff_frames * num_tokens
     
-    print(f"Training with batch size {batch_size}, train steps {train_steps}, eval every {eval_every}, img size {img_size}, patches per dim {patches_per_dim}, num frames {num_frames} (num effective frames {num_eff_frames}), t_skip {t_skip}, block size {block_size}, token dim {token_dim}, num tokens {num_tokens}")
+    print(f"Training with batch size {batch_size}, train steps {train_steps}, eval every {eval_every}, img size {img_size}, patches per dim {patches_per_dim}, num frames {num_frames} (num effective frames {num_eff_frames}), t_skip {t_skip}, block size {block_size}, token dim {token_dim}, num tokens {num_tokens}, loss beta {loss_beta}")
     
     gpt_config = GPTConfig(
         img_size=img_size,
@@ -361,7 +362,7 @@ def train_gpt(batch_size: int = 32, train_steps: int = 3000, eval_every: int = 2
     print(f"Loaded {num_train} training sequences.")
     
     @jax.jit
-    def train_step(state, tokens_batch, dropout_rng):
+    def train_step(state, tokens_batch, dropout_rng, beta):
         def loss_fn(params):
             B, num_eff_frames, num_tokens, token_dim = tokens_batch.shape
             inputs = tokens_batch[:, :-1, :, :]
@@ -372,7 +373,7 @@ def train_gpt(batch_size: int = 32, train_steps: int = 3000, eval_every: int = 2
             bce_per_elem = optax.sigmoid_binary_cross_entropy(logits, targets)
             # weight = jnp.ones_like(targets)
             # weight = weight.at[targets == 1].set(5.0)
-            weight = jnp.where(targets == 1.0, 5.0, 1.0)
+            weight = jnp.where(targets == 1.0, beta, 1.0)
             return (weight * bce_per_elem).mean()
         loss, grads = jax.value_and_grad(loss_fn)(state.params)
         state = state.apply_gradients(grads=grads)
@@ -386,7 +387,7 @@ def train_gpt(batch_size: int = 32, train_steps: int = 3000, eval_every: int = 2
         if t_skip > 0:
             tokens_batch = tokens_batch[:, ::(t_skip + 1), :, :]
         rng, dropout_rng = jax.random.split(rng)
-        state, loss = train_step(state, tokens_batch, dropout_rng)
+        state, loss = train_step(state, tokens_batch, dropout_rng, loss_beta)
         train_losses.append(float(loss))
         wandb.log({"step": step, "train_loss": float(loss)})
         print(f"[Step {step}] Loss: {loss:.6f}")
@@ -395,9 +396,9 @@ def train_gpt(batch_size: int = 32, train_steps: int = 3000, eval_every: int = 2
             evaluate(model, state, val_dataset, img_size, grid_size, step, t_skip=t_skip)
     
     os.makedirs("checkpoints", exist_ok=True)
-    with open(f"checkpoints/gpt_params_bsz{batch_size}_trainsteps{train_steps}_img{img_size}_patches{patches_per_dim}_frames{num_frames}_tskip{t_skip}.pkl", "wb") as f:
+    with open(f"checkpoints/gpt_params_bsz{batch_size}_trainsteps{train_steps}_img{img_size}_patches{patches_per_dim}_frames{num_frames}_tskip{t_skip}_beta{loss_beta}.pkl", "wb") as f:
         pickle.dump(state.params, f)
-    print(f"[Done] Model parameters saved to checkpoints/gpt_params_bsz{batch_size}_trainsteps{train_steps}_img{img_size}_patches{patches_per_dim}_frames{num_frames}_tskip{t_skip}.pkl")
+    print(f"[Done] Model parameters saved to checkpoints/gpt_params_bsz{batch_size}_trainsteps{train_steps}_img{img_size}_patches{patches_per_dim}_frames{num_frames}_tskip{t_skip}_beta{loss_beta}.pkl")
     wandb.finish()
 
 
@@ -420,6 +421,8 @@ if __name__ == "__main__":
                         help="Path to validation CSV file")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for reproducibility")
+    parser.add_argument("--loss_beta", type=float, default=2.0,
+                        help="Loss weight for alive cells")
     args = parser.parse_args()
 
     train_gpt(batch_size=args.batch_size, 
@@ -429,6 +432,7 @@ if __name__ == "__main__":
               patches_per_dim=args.patches_per_dim, 
               num_frames=args.num_frames, 
               t_skip=args.t_skip, 
+              loss_beta=args.loss_beta,
               train_csv=args.train_csv, 
               val_csv=args.val_csv,
               seed=args.seed)
