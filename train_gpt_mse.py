@@ -28,9 +28,9 @@ from util_gol import frame_to_tokens, tokens_to_frame, load_dataset_from_csv
 @dataclass
 class GPTConfig:
     img_size: int
-    block_size: int         # (num_eff_frames - 1) * (num_tokens)
-    token_dim: int          # Dimension of each token (e.g., (img_size // patches_per_dim)**2)
-    num_tokens: int         # Number of tokens per frame (e.g., patches_per_dim**2)
+    block_size: int
+    token_dim: int
+    num_tokens: int
     n_layer: int = 12
     n_head: int = 8
     n_embd: int = 256
@@ -42,15 +42,15 @@ class CausalSelfAttention(nn.Module):
 
     def setup(self):
         config = self.config
-        assert config.n_embd % config.n_head == 0, "n_embd must be divisible by n_head"
+        assert config.n_embd % config.n_head == 0
         self.head_size = config.n_embd // config.n_head
         self.n_head = config.n_head
         self.c_attn = nn.Dense(config.n_embd * 3)
         self.c_proj = nn.Dense(config.n_embd)
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
-    
-    def __call__(self, x: jnp.ndarray, *, train: bool) -> jnp.ndarray:
+
+    def __call__(self, x: jnp.ndarray, *, train: bool):
         B, T, C = x.shape
         qkv = self.c_attn(x)
         q, k, v = jnp.split(qkv, 3, axis=-1)
@@ -80,8 +80,8 @@ class MLP(nn.Module):
         self.c_fc = nn.Dense(4 * config.n_embd)
         self.c_proj = nn.Dense(config.n_embd)
         self.dropout = nn.Dropout(config.dropout)
-    
-    def __call__(self, x: jnp.ndarray, *, train: bool) -> jnp.ndarray:
+
+    def __call__(self, x: jnp.ndarray, *, train: bool):
         x = self.c_fc(x)
         x = nn.gelu(x, approximate=True)
         x = self.c_proj(x)
@@ -97,8 +97,8 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(self.config)
         self.ln_2 = nn.LayerNorm(epsilon=1e-5)
         self.mlp = MLP(self.config)
-    
-    def __call__(self, x: jnp.ndarray, *, train: bool) -> jnp.ndarray:
+
+    def __call__(self, x: jnp.ndarray, *, train: bool):
         x = x + self.attn(self.ln_1(x), train=train)
         x = x + self.mlp(self.ln_2(x), train=train)
         return x
@@ -115,21 +115,21 @@ class GPT(nn.Module):
         self.h = [Block(config) for _ in range(config.n_layer)]
         self.ln_f = nn.LayerNorm()
         self.head = nn.Dense(config.token_dim)
-    
-    def __call__(self, tokens: jnp.ndarray, *, train: bool) -> Tuple[jnp.ndarray, Optional[jnp.ndarray]]:
+
+    def __call__(self, tokens: jnp.ndarray, *, train: bool):
         B, T, d = tokens.shape
-        assert d == self.config.token_dim, f"Token dim mismatch: got {d}, expected {self.config.token_dim}"
+        assert d == self.config.token_dim
         x = self.token_proj(tokens)
-        pos = jnp.arange(0, T, dtype=jnp.int32)[None, :]
-        pos_emb = self.wpe(pos)
-        x = x + pos_emb
+        pos = jnp.arange(T)[None, :]
+        x = x + self.wpe(pos)
         x = self.drop(x, deterministic=not train)
         for block in self.h:
             x = block(x, train=train)
         x = self.ln_f(x)
         logits = self.head(x)
-        return logits, None
-    
+        preds = jax.nn.sigmoid(logits)   # continuous grayscale
+        return preds, None
+
     def configure_optimizers(self, params, weight_decay, learning_rate, betas):
         def get_optimizer(decay):
             return optax.adamw(
@@ -152,7 +152,7 @@ class GPT(nn.Module):
         param_partitions = freeze(path_aware_map(partition_fn, params))
         tx = optax.multi_transform(partition_optimizers, param_partitions)
         return tx
-    
+
     def create_state(self, learning_rate, weight_decay, beta1, beta2,
                      decay_lr=None, warmup_iters=None, lr_decay_iters=None, min_lr=None,
                      params=None, **kwargs):
@@ -173,66 +173,55 @@ class GPT(nn.Module):
         return train_state.TrainState.create(apply_fn=self.apply, params=params, tx=tx)
 
 
-def evaluate(model, state, val_dataset: np.ndarray, img_size: int, grid_size: Tuple[int, int], step: int, t_skip: int = 0):
-    """
-    Evaluate the GPT model on the validation dataset
-    """
-    # Evaluation using teacher-forcing
+def evaluate(model, state, val_dataset: np.ndarray, img_size: int, grid_size: Tuple[int,int], step: int, t_skip: int=0):
     num_val = val_dataset.shape[0]
     num_eval = 1000
-    eval_batch_size = 100  # avoid OOM
+    batch_size = 100
     rng = np.random.default_rng()
     idxs = rng.choice(num_val, size=num_eval, replace=False)
 
-    all_y_true = []
-    all_y_prob = []
-    all_y_pred = []
-    
-    for i in range(0, num_eval, eval_batch_size):
-        sub_idxs = idxs[i:i + eval_batch_size]
-        batch = val_dataset[sub_idxs]  # shape: (B, T, num_tokens, token_dim)
-        if t_skip > 0:
-            batch = batch[:, ::(t_skip + 1), :, :]
-        inputs = batch[:, :-1, :, :]
-        targets = batch[:, 1:, :, :]
-        B, t_minus1, N, D = inputs.shape
-        inputs = inputs.reshape(B, -1, D)
-        targets = targets.reshape(B, -1, D)
-        logits, _ = model.apply({'params': state.params}, inputs, train=False)
-        probs = jax.nn.sigmoid(logits)
-        preds = (logits > 0).astype(np.float32)
-        all_y_true.append(np.array(targets).reshape(-1))
-        all_y_prob.append(np.array(probs).reshape(-1))
-        all_y_pred.append(np.array(preds).reshape(-1))
+    all_true = []
+    all_pred = []
 
-    y_true = np.concatenate(all_y_true)
-    y_prob = np.concatenate(all_y_prob)
-    y_pred = np.concatenate(all_y_pred)
+    for i in range(0, num_eval, batch_size):
+        sub = idxs[i:i+batch_size]
+        batch = val_dataset[sub]
+        if t_skip>0:
+            batch = batch[:, ::(t_skip+1),:,:]
+        inp = batch[:,:-1,:,:].reshape(len(sub),-1, batch.shape[-1])
+        tgt = batch[:,1:,:,:].reshape(len(sub),-1, batch.shape[-1])
+        preds, _ = model.apply({'params': state.params}, inp, train=False)
+        all_true.append(tgt.reshape(-1))
+        all_pred.append(np.array(preds).reshape(-1))
 
-    # Compute metrics
-    accuracy  = (y_pred == y_true).mean()
-    precision = precision_score(y_true, y_pred, zero_division=0)
-    recall    = recall_score(y_true, y_pred, zero_division=0)
-    # AUROC requires at least one positive and one negative in y_true
+    y_true = np.concatenate(all_true)
+    y_pred = np.concatenate(all_pred)
+
+    # Regression metric
+    mse = np.mean((y_pred - y_true)**2)
+
+    # Classification metrics via threshold=0.5
+    y_bin = (y_pred >= 0.5).astype(int)
+    precision = precision_score(y_true, y_bin, zero_division=0)
+    recall    = recall_score(y_true, y_bin, zero_division=0)
     try:
-        auroc = roc_auc_score(y_true, y_prob)
+        auroc = roc_auc_score(y_true, y_pred)
     except ValueError:
         auroc = float('nan')
-    # balanced accuracy
-    tp = np.sum((y_pred == 1) & (y_true == 1))
-    tn = np.sum((y_pred == 0) & (y_true == 0))
-    fp = np.sum((y_pred == 1) & (y_true == 0))
-    fn = np.sum((y_pred == 0) & (y_true == 1))
-    bal_acc = 0.5 * (tp/(tp+fn+1e-8) + tn/(tn+fp+1e-8))
-    # accuracy = (preds == targets).mean() * 100.0
-    print(f"[Eval] Step {step} — Acc: {accuracy*100:.2f}%, Prec: {precision:.3f}, Rec: {recall:.3f}, AUROC: {auroc:.3f}")
+    tp = np.sum((y_bin==1)&(y_true==1))
+    tn = np.sum((y_bin==0)&(y_true==0))
+    fp = np.sum((y_bin==1)&(y_true==0))
+    fn = np.sum((y_bin==0)&(y_true==1))
+    bal_acc = 0.5*(tp/(tp+fn+1e-8) + tn/(tn+fp+1e-8))
+
+    print(f"[Eval] Step {step} — MSE: {mse:.6f}, Prec: {precision:.3f}, Rec: {recall:.3f}, AUROC: {auroc:.3f}, BalAcc: {bal_acc:.3f}")
     wandb.log({
-        "eval_accuracy":    float(accuracy),
-        "eval_precision":   float(precision),
-        "eval_recall":      float(recall),
-        "eval_auroc":       float(auroc),
-        "eval_balanced_acc": float(bal_acc),
-        "eval_step":        step,
+        "eval_mse": mse,
+        "eval_precision": precision,
+        "eval_recall": recall,
+        "eval_auroc": auroc,
+        "eval_balanced_acc": bal_acc,
+        "eval_step": step,
     })
 
     # Visualization
@@ -249,11 +238,10 @@ def evaluate(model, state, val_dataset: np.ndarray, img_size: int, grid_size: Tu
     while num_pred < 2:
         inp = np.stack(pred_seq, axis=0)
         inp = inp.reshape(1, -1, model.config.token_dim)
-        logits, _ = model.apply({'params': state.params}, inp, train=False)
-        logits = logits.reshape(num_pred, -1, model.config.token_dim)
-        last_frame_logits = logits[-1]
-        next_frame_tokens = (last_frame_logits > 0).astype(np.float32)
-        pred_seq.append(np.array(next_frame_tokens))
+        preds, _ = model.apply({'params': state.params}, inp, train=False)
+        preds = preds.reshape(num_pred, -1, model.config.token_dim)
+        last_frame = preds[-1]
+        pred_seq.append(np.array(last_frame))
         num_pred += 1
     generated_vis = np.stack(pred_seq, axis=0)
 
@@ -270,11 +258,13 @@ def evaluate(model, state, val_dataset: np.ndarray, img_size: int, grid_size: Tu
         imageio.imwrite(os.path.join(gt_folder, f"frame_{i:04d}.png"), (gt_frame * 255).astype(np.uint8))
         imageio.imwrite(os.path.join(gen_folder, f"frame_{i:04d}.png"), (gen_frame * 255).astype(np.uint8))
         # Create discrepancy panel
-        dark_blue = np.array([0.0, 0.0, 139/255.0])
-        yellow = np.array([1.0, 1.0, 0.0])
-        discrepancy = np.ones_like(gt_frame) * dark_blue
-        diff_mask = (gt_frame[..., 0] != gen_frame[..., 0])
-        discrepancy[diff_mask] = yellow
+        # dark_blue = np.array([0.0, 0.0, 139/255.0])
+        # yellow = np.array([1.0, 1.0, 0.0])
+        # discrepancy = np.ones_like(gt_frame) * dark_blue
+        # diff_mask = (gt_frame[..., 0] != gen_frame[..., 0])
+        # discrepancy[diff_mask] = yellow
+        abs_err = np.abs(gt_frame[...,0] - gen_frame[...,0])
+        discrepancy = np.repeat(abs_err[:, :, None], 3, axis=-1)
         
         # Create a three-panel figure with labels.
         fig, axes = plt.subplots(1, 3, figsize=(9, 3))
@@ -313,21 +303,16 @@ def evaluate(model, state, val_dataset: np.ndarray, img_size: int, grid_size: Tu
     wandb.log({"eval_gif": wandb.Video(gif_path, fps=20, format="gif"), "eval_step": step})
 
 
-def train_gpt(batch_size: int = 32, train_steps: int = 3000, eval_every: int = 200, img_size: int = 32, patches_per_dim: int = 2,
-              num_frames: int = 10, t_skip: int = 0, loss_beta: float = 2.0,
-              train_csv: str = "conway_states_0_1_10000by32by32by10_toroidal_20240711_133408.csv",
-              val_csv: str = "conway_states_0_1_1000by32by32by10_toroidal_20240711_151806.csv",
-              seed: int = 42):
-    """
-    Training routine using CSV file data.
-    Assumes each simulation sequence in the CSV has num_frames frames of size (img_size x img_size).
-    """
+def train_gpt(batch_size: int=32, train_steps: int=3000, eval_every: int=200,
+              img_size: int=32, patches_per_dim: int=2, num_frames: int=10,
+              t_skip: int=0, loss_beta: float = 2.0, train_csv: str="...", val_csv: str="...", seed: int=42):
+
     random.seed(seed)
     np.random.seed(seed)
     rng = jax.random.PRNGKey(seed)
 
     wandb.init(project="gol_sim",
-               name=f"gpt_bsz{batch_size}_trainsteps{train_steps}_img{img_size}_patches{patches_per_dim}_frames{num_frames}_tskip{t_skip}_beta{loss_beta}_seed{seed}",
+               name=f"gpt_mse_bsz{batch_size}_trainsteps{train_steps}_img{img_size}_patches{patches_per_dim}_frames{num_frames}_tskip{t_skip}_beta{loss_beta}_seed{seed}",
                config={"batch_size": batch_size,
                        "train_steps": train_steps,
                        "img_size": img_size,
@@ -336,14 +321,14 @@ def train_gpt(batch_size: int = 32, train_steps: int = 3000, eval_every: int = 2
                        "t_skip": t_skip,
                        "loss_beta": loss_beta,
                        "seed": seed})
-    
+
     grid_size = (patches_per_dim, patches_per_dim)
     token_dim = (img_size // patches_per_dim) ** 2
     num_tokens = patches_per_dim ** 2
     num_eff_frames = math.ceil(num_frames / (t_skip + 1))
     block_size = num_eff_frames * num_tokens
-    
-    print(f"Training with batch size {batch_size}, train steps {train_steps}, eval every {eval_every}, img size {img_size}, patches per dim {patches_per_dim}, num frames {num_frames} (num effective frames {num_eff_frames}), t_skip {t_skip}, block size {block_size}, token dim {token_dim}, num tokens {num_tokens}, loss beta {loss_beta}, seed {seed}")
+
+    print(f"Training (MSE) with batch size {batch_size}, train steps {train_steps}, eval every {eval_every}, img size {img_size}, patches per dim {patches_per_dim}, num frames {num_frames} (num effective frames {num_eff_frames}), t_skip {t_skip}, block size {block_size}, token dim {token_dim}, num tokens {num_tokens}, loss beta {loss_beta}, seed {seed}")
     
     gpt_config = GPTConfig(
         img_size=img_size,
@@ -365,23 +350,22 @@ def train_gpt(batch_size: int = 32, train_steps: int = 3000, eval_every: int = 2
     val_dataset = load_dataset_from_csv(val_csv, img_size, num_frames, grid_size) if os.path.exists(val_csv) else None
     num_train = train_dataset.shape[0]
     print(f"Loaded {num_train} training sequences.")
-    
+
     @jax.jit
-    def train_step(state, tokens_batch, dropout_rng, beta):
+    def train_step(state, batch, dropout_rng, beta):
         def loss_fn(params):
-            B, num_eff_frames, num_tokens, token_dim = tokens_batch.shape
-            inputs = tokens_batch[:, :-1, :, :]
-            targets = tokens_batch[:, 1:, :, :]
-            inputs = inputs.reshape(B, -1, token_dim)
-            targets = targets.reshape(B, -1, token_dim)
-            logits, _ = model.apply({'params': params}, inputs, train=True, rngs={'dropout': dropout_rng})
-            bce_per_elem = optax.sigmoid_binary_cross_entropy(logits, targets)
-            weight = jnp.where(targets == 1.0, beta, 1.0)
-            return (weight * bce_per_elem).mean()
+            B, ef, nt, td = batch.shape
+            inp = batch[:,:-1,:,:].reshape(B, -1, td)
+            tgt = batch[:,1:,:,:].reshape(B, -1, td)
+            preds, _ = model.apply({'params': params}, inp, train=True, rngs={'dropout': dropout_rng})
+            weight = jnp.where(tgt == 1.0, beta, 1.0)
+            sq_err = (preds - tgt)**2
+            weighted_sq_err = weight * sq_err
+            return weighted_sq_err.mean()
         loss, grads = jax.value_and_grad(loss_fn)(state.params)
         state = state.apply_gradients(grads=grads)
         return state, loss
-    
+
     train_losses = []
     # rng = jax.random.PRNGKey(int(time.time()))
     for step in range(1, train_steps + 1):
@@ -399,13 +383,13 @@ def train_gpt(batch_size: int = 32, train_steps: int = 3000, eval_every: int = 2
             evaluate(model, state, val_dataset, img_size, grid_size, step, t_skip=t_skip)
     
     os.makedirs("checkpoints", exist_ok=True)
-    with open(f"checkpoints/gpt_params_bsz{batch_size}_trainsteps{train_steps}_img{img_size}_patches{patches_per_dim}_frames{num_frames}_tskip{t_skip}_beta{loss_beta}_seed{seed}.pkl", "wb") as f:
+    with open(f"checkpoints/gpt_params_mse_bsz{batch_size}_trainsteps{train_steps}_img{img_size}_patches{patches_per_dim}_frames{num_frames}_tskip{t_skip}_beta{loss_beta}_seed{seed}.pkl", "wb") as f:
         pickle.dump(state.params, f)
-    print(f"[Done] Model parameters saved to checkpoints/gpt_params_bsz{batch_size}_trainsteps{train_steps}_img{img_size}_patches{patches_per_dim}_frames{num_frames}_tskip{t_skip}_beta{loss_beta}_seed{seed}.pkl")
+    print(f"[Done] Model parameters saved to checkpoints/gpt_params_mse_bsz{batch_size}_trainsteps{train_steps}_img{img_size}_patches{patches_per_dim}_frames{num_frames}_tskip{t_skip}_beta{loss_beta}_seed{seed}.pkl")
     wandb.finish()
 
 
-if __name__ == "__main__":
+if __name__=="__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--train_steps", type=int, default=50000)
@@ -424,8 +408,8 @@ if __name__ == "__main__":
                         help="Path to validation CSV file")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for reproducibility")
-    parser.add_argument("--loss_beta", type=float, default=2.0,
-                        help="Loss weight for alive cells")
+    parser.add_argument("--loss_beta", type=float, default=2.0, 
+                         help="Loss weight for alive cells")
     args = parser.parse_args()
 
     train_gpt(batch_size=args.batch_size, 
