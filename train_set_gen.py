@@ -18,8 +18,8 @@ def generate_sets(A=100, N=32, I=2, Toroidal=False, save_folder='data'):
 
     start_time = time.time()
     
-    start = 0 # order param of the frist sample
-    end = 1 # order param of the last sample
+    start = 0.4 # order param of the frist sample
+    end = 0.4 # order param of the last sample
     train_data = game.generate_sets(A=A, N=N, I=I, s=start, e=end)
 
     data = []

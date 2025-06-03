@@ -2,44 +2,24 @@ import matplotlib.pyplot as plt
 
 # Stats
 # Balanced accuracy here, not the same as accuracy
-acc_stats = {
-    "dt1": [1.0],
-    "dt2": [0.99959],
-    "dt4": [0.98085],
-    "dt5": [0.94817],
-    "dt6": [0.80013],
-    "dt8": [0.70072],
-    "dt16": [0.68042],
+mse_stats = {
+    "dt1": [0.003523],
+    "dt2": [0.003403],
+    "dt4": [0.003513],
+    "dt5": [0.003559],
+    "dt6": [0.003400],
+    "dt8": [0.003533],
+    "dt16": [0.003479],
 }
 
-precision_stats = {
-    "dt1": [1.0],
-    "dt2": [0.99944],
-    "dt4": [0.97515],
-    "dt5": [0.82706],
-    "dt6": [0.49604],
-    "dt8": [0.33726],
-    "dt16": [0.28579],
-}
-
-recall_stats = {
-    "dt1": [1.0],
-    "dt2": [0.99929],
-    "dt4": [0.96541],
-    "dt5": [0.92276],
-    "dt6": [0.69097],
-    "dt8": [0.51719],
-    "dt16": [0.4567],
-}
-
-auroc_stats = {
-    "dt1": [1.0],
-    "dt2": [0.99979],
-    "dt4": [0.99962],
-    "dt5": [0.96747],
-    "dt6": [0.93647],
-    "dt8": [0.87471],
-    "dt16": [0.86507],
+r2_stats = {
+    "dt1": [0.027299],
+    "dt2": [0.026465],
+    "dt4": [0.025700],
+    "dt5": [0.024685],
+    "dt6": [0.027853],
+    "dt8": [0.023196],
+    "dt16": [0.022535],
 }
 
 
@@ -64,14 +44,12 @@ def prepare_data(stats_dict):
 
 if __name__ == "__main__":
     metrics = {
-        "Balanced Accuracy": acc_stats,
-        "Precision": precision_stats,
-        "Recall": recall_stats,
-        "AUROC": auroc_stats,
+        "MSE": mse_stats,
+        "R^2": r2_stats,
     }
 
     # Create 2x2 subplots
-    fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
     axes = axes.flatten()
 
     for ax, (metric_name, stats) in zip(axes, metrics.items()):
@@ -82,5 +60,6 @@ if __name__ == "__main__":
         ax.set_ylabel(f'{metric_name}')
         ax.grid(True, alpha=0.3)
 
+    fig.suptitle("Linear Probe for Shannon Entropy 16 Steps Ahead", fontsize=16)
     plt.tight_layout()
-    plt.savefig("acc_graph.png")
+    plt.savefig("probe_graph.png")
