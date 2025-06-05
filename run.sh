@@ -23,7 +23,7 @@
 
 # python train_set_gen.py --img_size 32 --num_steps 96
 
-python train_gpt.py --num_frames 64 --t_skip 1 --train_csv data/conway_states_0.4_0.4_10000by32by32by64_toroidal_20250602_161505.csv --val_csv data/conway_states_0.4_0.4_10000by32by32by64_toroidal_20250602_161935.csv --seed 42 --loss_beta 1.0 --train_steps 50000
+# python train_gpt.py --num_frames 64 --t_skip 1 --train_csv data/conway_states_0.4_0.4_10000by32by32by64_toroidal_20250602_161505.csv --val_csv data/conway_states_0.4_0.4_10000by32by32by64_toroidal_20250602_161935.csv --seed 42 --loss_beta 1.0 --train_steps 50000
 
 
 # python train_set_gen.py --img_size 32 --num_steps 256
@@ -39,3 +39,9 @@ python train_gpt.py --num_frames 64 --t_skip 1 --train_csv data/conway_states_0.
 # python train_gpt.py --num_frames 256 --t_skip 7 --train_csv data/conway_states_0.4_0.4_10000by32by32by256_toroidal_20250528_193056.csv --val_csv data/conway_states_0.4_0.4_10000by32by32by256_toroidal_20250528_194823.csv --seed 42 --loss_beta 2.8 --train_steps 100000
 
 # python train_gpt.py --num_frames 512 --t_skip 15 --train_csv data/conway_states_0.4_0.4_10000by32by32by512_toroidal_20250531_232832.csv --val_csv data/conway_states_0.4_0.4_10000by32by32by512_toroidal_20250601_000456.csv --seed 42 --loss_beta 3.8 --train_steps 100000
+
+python probe_entropy_modified_modified.py --val_csv data/conway_states_0.4_0.4_10000by32by32by256_toroidal_20250605_043102.csv --checkpoint_dir 'checkpoints' --num_frames_cond 1 3 5 7 9 11 --layer_to_probe 10
+
+python probe_entropy_modified_modified.py --val_csv data/conway_states_0.4_0.4_10000by32by32by256_toroidal_20250605_043102.csv --checkpoint_dir 'checkpoints' --num_frames_cond 1 3 5 7 9 11 --layer_to_probe 10 --dt_probe 8
+
+python probe_entropy_modified_modified.py --val_csv data/conway_states_0.4_0.4_10000by32by32by256_toroidal_20250605_043102.csv --checkpoint_dir 'checkpoints' --num_frames_cond 1 3 5 7 9 11 --layer_to_probe 10 --dt_probe 4
